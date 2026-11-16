@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "子智能体路由守卫",
+    "description": "在 subagent / subagent_fork 派发前检查子智能体实际会运行的路由：显式指定的 provider/model 必须在白名单里；省略模型、准备「回退父级」时，父级模型也必须在白名单里，否则直接拒绝并给出精确的重试写法。routes 为空时保留 DSH 原生行为。"
+  }
+}

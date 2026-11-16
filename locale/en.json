@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Subagent route guard",
+    "description": "Checks the route a subagent will actually run on before dispatch: an explicit provider/model must be in the allow-list, and when the model is omitted (falling back to the parent route) the parent model must be in the allow-list too, otherwise the call is refused with the exact retry syntax. An empty routes list keeps DSH's native behaviour."
+  }
+}

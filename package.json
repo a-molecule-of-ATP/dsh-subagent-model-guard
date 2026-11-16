@@ -1,0 +1,24 @@
+{
+  "name": "@local/dsh-subagent-model-guard",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Route guard for subagent delegation: blocks routes outside the configured allow-list, including the silent parent-route fallback.",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "node_modules/**"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

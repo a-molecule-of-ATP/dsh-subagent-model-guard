@@ -1,0 +1,3 @@
+- insert:
+    - id: subagent-model-guard
+      name: '@local/dsh-subagent-model-guard'
