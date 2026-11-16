@@ -147,10 +147,9 @@ export function apply(ctx, config) {
       const layerHint = recorded && recorded.length > 0
         ? `（本会话记录的官方白名单：${recorded.join('、')}）`
         : '';
-      const debug = `［调试：args 键=${Object.keys(args).join(',') || '(空)'}］`;
       return deny(
         `这次派发没有指定 provider/model，会继承父级模型 ${key}，但它不在子智能体白名单里`
-        + `（允许：${describeRoutes(routes)}）${layerHint}。${retryHint()}${debug}`,
+        + `（允许：${describeRoutes(routes)}）${layerHint}。${retryHint()}`,
         'inherited-route-not-allowed',
       );
     }
