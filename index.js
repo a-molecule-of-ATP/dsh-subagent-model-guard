@@ -10,43 +10,18 @@
  * - a non-empty `routes` list is the allow-list;
  * - explicit `provider`/`model` must be in it;
  * - an omitted route inherits the parent's route, which must also be in it
- *   (refused when it cannot be confirmed);
- * - a named role may narrow the route it is allowed to run on.
+ *   (refused when it cannot be confirmed).
  *
  * An empty `routes` list keeps the native behaviour (nothing is enforced),
  * matching the hub's "empty list keeps native inheritance" rule.
- *
- * Optional take-over (`takeOverNativeAllowList`): DSH appends one durable
- * `subagent/model-selection-policy` event per Session and its projection keeps
- * only the first one, so a Session that started while
- * `subagent-model-selection-settings.enabled` was true keeps that frozen
- * snapshot forever. Turning the native switch off at runtime leaves `routes`
- * as the only live allow-list. `enabled` and `allowedModels` are declared with
- * `.volatile()`, so `Entry.update()` commits the change into the running
- * service without a remount and — because this bypasses `EntryTree.update` —
- * without journalling anything back into the profile's cordis.patch.yml.
  */
 import Schema from '@deepseek-ai/schemastery';
 
 export const name = 'subagent-model-guard';
 
-/** Only the tool registry is required; the loader is read opportunistically. */
 export const inject = ['tools'];
 
 const DELEGATION_TOOLS = new Set(['subagent', 'subagent_fork']);
-
-/** Tree-local id the profile patch gives the native settings entry. */
-const NATIVE_SETTINGS_ID = 'subagent-model-selection-settings';
-
-/** Package name of the native settings entry, matched when the id differs. */
-const NATIVE_SETTINGS_NAME = '@deepseek-ai/dsh-tool-subagent/model-selection-settings';
-
-/** Bounded wait for the native settings entry to be created by the loader. */
-const LOCATE_ATTEMPTS = 40;
-const LOCATE_INTERVAL_MS = 100;
-
-/** Actionable fallback when the runtime take-over cannot be done. */
-const MANUAL_HINT = '需要手动把 profile 的 cordis.patch.yml 里 `- id: subagent-model-selection-settings` 的 config.enabled 改为 false，然后重启 DSH。';
 
 export const Config = Schema.object({
   routes: Schema.array(Schema.object({
@@ -59,9 +34,7 @@ export const Config = Schema.object({
     .description('关闭后整段守卫失效。'),
   checkInherited: Schema.boolean().default(true)
     .description('是否检查“省略模型、回退父级”的继承路径。'),
-  takeOverNativeAllowList: Schema.boolean().default(false)
-    .description('是否在运行时接管 DSH 原生子智能体模型白名单：开启后本插件把 subagent-model-selection-settings 的 enabled 在运行时置为 false（只改运行时内存，不写 profile 配置文件），白名单改由本插件 routes 实时把关。'
-      + `若运行时接管失败，本插件只打一条 console.warn：${MANUAL_HINT}`),
+
 }).description('子智能体路由守卫：阻止派发跑到白名单之外的模型。');
 
 function routeKey(provider, model) {
@@ -119,94 +92,9 @@ function deny(reason, code) {
   };
 }
 
-/** Resolve a value that may be a schema-declared volatile reference. */
-function readSetting(value) {
-  return value && typeof value === 'object' && typeof value.get === 'function' ? value.get() : value;
-}
-
-/** Raw entry config normalized to a plain object. */
-function rawConfigOf(entry) {
-  const config = entry?.options?.config;
-  return config && typeof config === 'object' && !Array.isArray(config) ? { ...config } : {};
-}
-
-/** The live `enabled` of the native setting, or undefined when unreadable. */
-function liveEnabled(entry) {
-  const effective = entry?.fiber?.effectiveConfig;
-  if (!effective || typeof effective !== 'object') return undefined;
-  const value = readSetting(effective.enabled);
-  return typeof value === 'boolean' ? value : undefined;
-}
-
-/** Locate the live native settings entry: tree-local id first, package name second. */
-function findNativeSettingsEntry(loader) {
-  for (const entry of loader.entries()) {
-    const options = entry?.options;
-    if (!options) continue;
-    if (options.id === NATIVE_SETTINGS_ID || options.name === NATIVE_SETTINGS_NAME) return entry;
-  }
-  return undefined;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    if (typeof timer === 'object' && timer !== null && typeof timer.unref === 'function') timer.unref();
-  });
-}
-
-/** Wait (bounded) for the loader to create the native settings entry. */
-async function waitForNativeEntry(loader) {
-  for (let attempt = 0; attempt < LOCATE_ATTEMPTS; attempt += 1) {
-    const entry = findNativeSettingsEntry(loader);
-    if (entry !== undefined) return entry;
-    await delay(LOCATE_INTERVAL_MS);
-  }
-  return undefined;
-}
-
-/**
- * Turn the native Session allow-list off at runtime.
- *
- * The native setting declares `enabled` and `allowedModels` with
- * `.volatile()`, so `Entry.update` takes its volatile-only path: the new value
- * is committed into the running service (no remount, no service churn) and,
- * because `Entry.update` is called instead of `EntryTree.update`, no journal
- * record is produced and the profile file is never rewritten.
- * @param ctx - Host context of this plugin.
- * @returns a short outcome tag for the log.
- */
-async function takeOverNativeAllowList(ctx) {
-  const loader = ctx.get('loader');
-  if (!loader || typeof loader.entries !== 'function') {
-    console.warn(`[subagent-model-guard] 无法接管原生白名单：Host 没有 Loader 服务。${MANUAL_HINT}`);
-    return 'no-loader';
-  }
-  const entry = await waitForNativeEntry(loader);
-  if (entry === undefined) {
-    console.warn(`[subagent-model-guard] 找不到 ${NATIVE_SETTINGS_ID} 条目（profile 可能没有启用它），原生白名单本来就不会写入。`);
-    return 'no-entry';
-  }
-  if (entry.disabled) return 'entry-disabled';
-  if (liveEnabled(entry) === false) return 'already-off';
-
-  // Keep every other key (notably allowedModels) exactly as configured: the
-  // native setting throws when `enabled` is on with an empty route list, and a
-  // leftover list is harmless while the switch is off.
-  await entry.update({ config: { ...rawConfigOf(entry), enabled: false } });
-
-  const after = liveEnabled(entry);
-  if (after === false) {
-    console.warn('[subagent-model-guard] 已在运行时把原生子智能体模型白名单设为 enabled: false（仅内存生效，未写配置文件）。');
-    return 'taken-over';
-  }
-  console.warn(`[subagent-model-guard] 已提交 enabled: false，但原生设置没有确认生效（活值：${String(after)}）。${MANUAL_HINT}`);
-  return 'unconfirmed';
-}
-
 /**
  * @param ctx - tool registry.
- * @param config - `{ routes, strict, checkInherited, takeOverNativeAllowList }`.
+ * @param config - `{ routes, strict, checkInherited }`.
  */
 export function apply(ctx, config) {
   const settings = config && typeof config === 'object' ? config : {};
@@ -214,16 +102,6 @@ export function apply(ctx, config) {
   const strict = settings.strict !== false;
   const checkInherited = settings.checkInherited !== false;
   const allowedKeys = new Set(routes.map((route) => routeKey(route.provider, route.model)));
-
-  if (settings.takeOverNativeAllowList === true) {
-    // One-shot mutation, never fatal: a failure is reported as a warning and
-    // the routes check below keeps working.
-    Promise.resolve()
-      .then(() => takeOverNativeAllowList(ctx))
-      .catch((error) => {
-        console.warn(`[subagent-model-guard] 接管原生白名单失败：${error instanceof Error ? error.message : String(error)}。${MANUAL_HINT}`);
-      });
-  }
 
   ctx.on('tools/pre-execute', async (exec, next) => {
     if (!strict) return next();

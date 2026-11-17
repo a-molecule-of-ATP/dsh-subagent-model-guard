@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Subagent route guard",
-    "description": "Checks the route a subagent will actually run on before dispatch: an explicit provider/model must be in the allow-list, and when the model is omitted (falling back to the parent route) the parent model must be in the allow-list too, otherwise the call is refused with the exact retry syntax. An empty routes list keeps DSH's native behaviour. With takeOverNativeAllowList on, the plugin sets DSH's native subagent model allow-list (subagent-model-selection-settings) to enabled: false at runtime — memory only, never written back to a file — leaving routes as the live allow-list. When the runtime take-over is not possible it logs a single console.warn, and you must set config.enabled to false on the `- id: subagent-model-selection-settings` entry in the profile's cordis.patch.yml and restart DSH. DSH records its native allow-list once per session and freezes it, so any change only affects sessions started afterwards."
+    "description": "Checks the route a subagent will actually run on before dispatch: an explicit provider/model must be in the allow-list, and when the model is omitted (falling back to the parent route) the parent model must be in the allow-list too, otherwise the call is refused with the exact retry syntax. An empty routes list keeps DSH's native behaviour."
   }
 }
