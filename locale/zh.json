@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "子智能体路由守卫",
-    "description": "在 subagent / subagent_fork 派发前检查子智能体实际会运行的路由：显式指定的 provider/model 必须在白名单里；省略模型、准备「回退父级」时，父级模型也必须在白名单里，否则直接拒绝并给出精确的重试写法。routes 为空时保留 DSH 原生行为。"
+    "description": "在 subagent / subagent_fork 派发前检查子智能体实际会运行的路由：显式指定的 provider/model 必须在白名单里；省略模型、准备「回退父级」时，父级模型也必须在白名单里，否则直接拒绝并给出精确的重试写法。routes 为空时保留 DSH 原生行为。开启 takeOverNativeAllowList 后，本插件会在运行时把 DSH 原生子智能体模型白名单（subagent-model-selection-settings）的 enabled 置为 false，只改运行时内存、不写配置文件，白名单改由 routes 实时把关；若运行时接管不可行，日志里只会有一条 console.warn，此时需要手动把 profile 的 cordis.patch.yml 中 `- id: subagent-model-selection-settings` 的 config.enabled 改为 false 并重启 DSH。DSH 原生白名单每个会话只记录一次且永久冻结，因此任何改动都只对之后新开的会话生效。"
   }
 }
