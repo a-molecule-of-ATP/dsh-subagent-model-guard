@@ -518,13 +518,6 @@ window.__ModuleLoader__.load({
               onChange: (value) => update({ checkInherited: value }),
             }),
             h(SwitchRow, {
-              key: 'cwd',
-              label: '接受 cwd 参数',
-              hint: '替身工具是否接受 cwd。关闭后子智能体一律继承父级工作目录。',
-              value: draft.cwd !== false,
-              onChange: (value) => update({ cwd: value }),
-            }),
-            h(SwitchRow, {
               key: 'listInError',
               label: '拒绝时列出可用名单',
               hint: '关闭后错误信息只说明被拒，不附带当前白名单。名单长时会淹没错误，也避免把它写进对话记录。',

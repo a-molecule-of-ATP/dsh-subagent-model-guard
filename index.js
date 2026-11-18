@@ -117,9 +117,6 @@ export const Config = Schema.object({
       + '关闭则保留官方工具（受快照限制）。',
     ),
 
-  cwd: Schema.boolean().default(true).volatile()
-    .description('替换工具时是否接受 cwd 参数。'),
-
   maxDepth: Schema.union([
     Schema.natural().min(1),
     Schema.const(null),
@@ -386,7 +383,6 @@ export function apply(ctx, config) {
   const useOfficialAllowList = () => flag('useOfficialAllowList', true);
   const checkInherited = () => flag('checkInherited', true);
   const replaceTool = () => flag('replaceSubagentTool', false);
-  const acceptCwd = () => flag('cwd', true);
   const auditEveryStep = () => flag('auditEveryStep', false);
   const includeAllowList = () => flag('includeAllowedListInError', true);
   const recentDenialLimit = () => count('recentDenialLimit', 0);
@@ -526,6 +522,194 @@ export function apply(ctx, config) {
     limit: recentDenialLimit,
   };
 
+  // ── Read-only self-check tool ─────────────────────────────────────────
+  // Diagnoses the state of THIS plugin instance. Every probe is independently
+  // guarded and the whole execute() has an outer catch: diagnosis must be
+  // strictly observational and must never throw, even when a config ref or a
+  // service is broken. All route logic is reused from the helpers above — this
+  // is a mirror, not a second implementation.
+  const selfcheckDefinition = () => ({
+    name: 'guard_selfcheck',
+    description: '只读诊断，不改任何状态：报告子智能体路由守卫的当前生效状态（严格/启用标志、enforcement 模式、官方与本插件白名单、'
+      + '显式拒绝名单、闸门与替换工具安装情况、最近拒绝计数），供排查为何某个路由被放行或拒绝。',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    output: {
+      // A schema object is mandatory: the registry rejects an output that only
+      // carries `render`, so the shape is declared even though it is diagnostic.
+      schema: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          active: { type: 'boolean' },
+          strict: { type: 'boolean' },
+          enforcement: { type: 'string' },
+          effectiveRouteCount: { type: 'number' },
+          recentDenials: { type: 'number' },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: `guard_selfcheck: active=${value?.active}, strict=${value?.strict}, enforcement=${value?.enforcement}`,
+      }],
+    },
+    async execute() {
+      // The outer net guarantees the tool never rejects, whatever happens.
+      try {
+        const checks = [];
+        /** Run one probe; record its outcome and never let it throw. */
+        const probe = (name, fn, hint) => {
+          try {
+            const value = fn();
+            checks.push({ name, ok: true, detail: '', hint });
+            return value;
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            checks.push({ name, ok: false, detail, hint });
+            return undefined;
+          }
+        };
+        const brief = (routes) => (Array.isArray(routes) && routes.length > 0
+          ? routes.map((r) => routeKey(r.provider, r.model)).join('、')
+          : '（空）');
+
+        // ── official allow-list: three distinguishable outcomes ────────
+        // 1) service missing/unusable → available:false + error
+        // 2) enabled=false            → available:true, enabled:false, no error, routes:[]
+        // 3) enabled with empty list  → current() throws → available:true + error, routes:[]
+        const officialAllowList = { available: false, enabled: false, routes: [] };
+        const officialHint = '检查 subagentModelSelection 是否挂载、enabled 是否为 true、allowedModels 是否非空';
+        try {
+          let service;
+          try {
+            service = ctx.get('subagentModelSelection');
+          } catch (error) {
+            officialAllowList.error = `读取服务失败：${error instanceof Error ? error.message : String(error)}`;
+          }
+          if (!service || typeof service.current !== 'function') {
+            if (officialAllowList.error === undefined) {
+              officialAllowList.error = 'subagentModelSelection 服务不可用（未挂载或缺少 current()）';
+            }
+            checks.push({ name: 'officialAllowList', ok: false, detail: officialAllowList.error, hint: officialHint });
+          } else {
+            officialAllowList.available = true;
+            let current;
+            try {
+              current = service.current();
+            } catch (error) {
+              officialAllowList.error = `current() 抛错：${error instanceof Error ? error.message : String(error)}`;
+              checks.push({ name: 'officialAllowList', ok: false, detail: officialAllowList.error, hint: officialHint });
+              current = undefined;
+            }
+            if (current !== undefined) {
+              officialAllowList.enabled = current?.enabled === true;
+              if (!officialAllowList.enabled) {
+                // A disabled official list imposes NO restriction. This is a
+                // normal state, so there is deliberately no `error` field.
+                checks.push({
+                  name: 'officialAllowList', ok: true,
+                  detail: '官方白名单已禁用（enabled=false），不施加限制', hint: officialHint,
+                });
+              } else {
+                const allowed = Array.isArray(current.allowedModels) ? current.allowedModels : [];
+                officialAllowList.routes = allowed
+                  .filter((entry) => entry && typeof entry.provider === 'string' && typeof entry.model === 'string')
+                  .map((entry) => ({ provider: entry.provider, model: entry.model }));
+                checks.push({
+                  name: 'officialAllowList', ok: true,
+                  detail: `官方白名单生效，${officialAllowList.routes.length} 条：${brief(officialAllowList.routes)}`,
+                  hint: officialHint,
+                });
+              }
+            }
+          }
+        } catch (error) {
+          officialAllowList.error = `读取官方白名单失败：${error instanceof Error ? error.message : String(error)}`;
+          checks.push({ name: 'officialAllowList', ok: false, detail: officialAllowList.error, hint: officialHint });
+        }
+
+        // ── every other field, each independently guarded ──────────────
+        const activeValue = probe('active', () => active(), 'strict=true 且存在至少一条允许/拒绝规则时守卫才生效');
+        const strictValue = probe('strict', () => strict(), '关闭后整段守卫失效，所有路由放行');
+        const enforcementValue = probe('enforcement', () => readEnforcement(), 'agent-created | start-activation | both');
+        const ownRoutes = probe('ownRules',
+          () => ownRules().map((r) => ({ provider: r.provider, model: r.model })),
+          '本插件 routes 字段：官方白名单之外的补充');
+        const deniedRoutes = probe('deniedKeys',
+          () => [...deniedKeys()].map((key) => {
+            const slash = key.indexOf('/');
+            return { provider: key.slice(0, slash), model: key.slice(slash + 1) };
+          }),
+          '显式拒绝名单，优先级高于一切白名单');
+        const effectiveRulesValue = probe('effectiveRules', () => effectiveRules(),
+          '官方 + 本插件白名单合并去重后的完整列表');
+        const keysOfValue = probe('keysOf', () => keysOf().size, '去重后的白名单 key 数');
+        const effectiveRouteCount = effectiveRulesValue === undefined
+          ? (keysOfValue ?? 0)
+          : effectiveRulesValue.length;
+        const gates = probe('gates', () => {
+          const mode = readEnforcement();
+          return {
+            agentCreated: mode === 'agent-created' || mode === 'both',
+            startActivation: mode === 'start-activation' || mode === 'both',
+          };
+        }, '当前 enforcement 模式下哪几道闸门处于启用状态')
+          ?? { agentCreated: false, startActivation: false };
+        const replacement = probe('replacement', () => ({
+          installed: replacementRegistered > 0,
+          note: `替换工具已在 ${replacementRegistered} 个 agent scope 注册；开关 replaceSubagentTool=${replaceTool()}`,
+        }), '替换工具让子智能体直接走 startActivation，绕开会话模型快照')
+          ?? { installed: false, note: '无法读取替换工具状态' };
+        const recentDenials = probe('recentDenials',
+          () => denialLog.snapshot(recentDenialLimit()).length,
+          '内存中保留的最近拒绝记录条数（recentDenialLimit=0 时不记录）');
+
+        return {
+          active: activeValue === undefined ? false : activeValue,
+          strict: strictValue === undefined ? false : strictValue,
+          enforcement: enforcementValue === undefined ? 'unknown' : enforcementValue,
+          officialAllowList,
+          ownRoutes: ownRoutes ?? [],
+          deniedRoutes: deniedRoutes ?? [],
+          effectiveRouteCount,
+          gates,
+          replacement,
+          recentDenials: recentDenials ?? 0,
+          checks,
+        };
+      } catch (error) {
+        // Last-resort fallback: even a completely broken probe must yield a
+        // well-shaped report instead of a rejected tool call.
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          active: false,
+          strict: false,
+          enforcement: 'unknown',
+          officialAllowList: { available: false, enabled: false, routes: [], error: `自检内部错误：${detail}` },
+          ownRoutes: [],
+          deniedRoutes: [],
+          effectiveRouteCount: 0,
+          gates: { agentCreated: false, startActivation: false },
+          replacement: { installed: false, note: '自检内部错误' },
+          recentDenials: 0,
+          checks: [{ name: 'selfcheck', ok: false, detail, hint: '请查看插件日志' }],
+        };
+      }
+    },
+  });
+
+  // Global, always-available registration. Optional chaining keeps embedders
+  // that compose apply() without the injected `tools` service working (e.g.
+  // minimal harnesses), and the catch keeps a bad registry from breaking apply.
+  try {
+    ctx.tools?.register?.(selfcheckDefinition());
+  } catch (error) {
+    warn('注册 guard_selfcheck 只读自检工具失败', error);
+  }
+
   // ── Gate A: agent/created ──────────────────────────────────────────────
   // Both gates are ALWAYS registered and decide from live config: a settings
   // write does not re-run `apply`, so making registration conditional on
@@ -618,6 +802,10 @@ export function apply(ctx, config) {
   // Registered unconditionally and decided live: a settings write does not
   // re-run `apply`, so gating registration on `replaceSubagentTool` would pin
   // the choice to activation time.
+
+  /** How many agent scopes had the replacement `subagent` tool registered. */
+  let replacementRegistered = 0;
+
   {
     const toolDescription =
       'Create an independently managed subagent and immediately return its name. '
@@ -625,7 +813,7 @@ export function apply(ctx, config) {
       + 'Use `send_message` to steer it while running or continue its conversation after it finishes. '
       + 'Pass `provider` and `model` to choose the child LLM route explicitly; omit both to inherit this conversation\'s route.';
 
-    /** Parameters are rebuilt per registration so a `cwd` toggle applies to new agents. */
+    /** Parameters are rebuilt per registration so schema changes apply to new agents. */
     const replacementParameters = () => {
       const parameters = {
         type: 'object',
@@ -642,6 +830,10 @@ export function apply(ctx, config) {
           name: {
             type: 'string',
             description: 'Optional short name, unique among the subagents you create: lower-case letters, digits, and hyphens, starting with a letter, at most 32 characters.',
+          },
+          cwd: {
+            type: 'string',
+            description: 'Initial child working directory. Relative paths use your current directory; omitted inherits it.',
           },
           provider: {
             type: 'string',
@@ -662,12 +854,6 @@ export function apply(ctx, config) {
         },
         required: ['description', 'prompt'],
       };
-      if (acceptCwd()) {
-        parameters.properties.cwd = {
-          type: 'string',
-          description: 'Initial child working directory. Relative paths use your current directory; omitted inherits it.',
-        };
-      }
       return parameters;
     };
 
@@ -743,7 +929,7 @@ export function apply(ctx, config) {
             ? args.description
             : 'subagent',
           ...(typeof args?.name === 'string' && args.name !== '' ? { name: args.name } : {}),
-          ...(acceptCwd() && typeof args?.cwd === 'string' && args.cwd !== '' ? { cwd: args.cwd } : {}),
+          ...(typeof args?.cwd === 'string' && args.cwd !== '' ? { cwd: args.cwd } : {}),
           prompt: [{ type: 'text', text: prompt }],
           parent,
           ...(agentOptions !== undefined ? { agentOptions } : {}),
@@ -785,6 +971,7 @@ export function apply(ctx, config) {
       //    exempt from the restriction above them.
       try {
         scoped.tools.register(replacementDefinition());
+        replacementRegistered += 1;
       } catch (error) {
         warn('注册替换用的 subagent 工具失败', error);
       }

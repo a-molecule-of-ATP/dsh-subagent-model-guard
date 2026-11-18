@@ -3,7 +3,25 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Route guard for subagent delegation: blocks routes outside the configured allow-list, including the silent parent-route fallback.",
+  "description": "DeepSeek Harness plugin that gates subagent delegation by provider/model allow-list, including the silent parent-route fallback, with optional official-tool replacement.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "plugin",
+    "subagent",
+    "model-guard",
+    "allow-list"
+  ],
+  "license": "MIT",
+  "author": "dafeiyu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dafeiyu/dsh-subagent-model-guard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dafeiyu/dsh-subagent-model-guard/issues"
+  },
+  "homepage": "https://github.com/dafeiyu/dsh-subagent-model-guard#readme",
   "exports": {
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json",

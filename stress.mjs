@@ -110,6 +110,8 @@ function makeCtx({ routes, subagentCalls = [] } = {}) {
     resolveMaxDepth: () => 1,
   };
   const services = { subagents, agentPresets: {} };
+  // Global (non-scoped) tool registrations, e.g. the read-only guard_selfcheck.
+  const globalRegistrations = new Map();
   const ctx = {
     on(event, listener) {
       listeners[event].push(listener);
@@ -118,12 +120,28 @@ function makeCtx({ routes, subagentCalls = [] } = {}) {
     get(name) {
       return services[name];
     },
+    tools: {
+      register(definition) {
+        // Mirror the registry's own contract: an `output` block without a
+        // `schema` object is rejected in the Host ("unsupported JSON schema"),
+        // so a fake registry that accepts it would hide the failure.
+        const output = definition.output;
+        if (output !== undefined) {
+          if (output.schema === null || typeof output.schema !== 'object') {
+            throw new Error(`JsonSchemaError: tool "${definition.name}" declares output without a schema object`);
+          }
+        }
+        globalRegistrations.set(definition.name, definition);
+        return () => globalRegistrations.delete(definition.name);
+      },
+    },
     logger: {
       warn(message) { logs.push(String(message)); },
     },
     attempts,
     listeners,
     logs,
+    globalRegistrations,
     emitAgentCreated(agent) {
       for (const listener of listeners['agent/created']) listener({ agent });
     },
@@ -676,7 +694,7 @@ await check('volatileForm(Config) is not undefined (entry survives describe())',
   const form = volatileForm(Config);
   assert(form !== undefined, 'Config has no volatile field — the settings entry is dropped');
   const fields = Object.keys(form.dict ?? {}).sort();
-  const expected = ['auditEveryStep', 'checkInherited', 'cwd', 'enforcement', 'replaceSubagentTool', 'routes', 'strict', 'useOfficialAllowList'];
+  const expected = ['auditEveryStep', 'checkInherited', 'deniedRoutes', 'enforcement', 'includeAllowedListInError', 'maxDepth', 'recentDenialLimit', 'replaceSubagentTool', 'routes', 'strict', 'useOfficialAllowList'];
   assert(
     JSON.stringify(fields) === JSON.stringify(expected.sort()),
     `projected fields mismatch: ${fields.join(',')}`,
@@ -802,6 +820,135 @@ await check('maxDepth: null is treated as unset, never 0', () => {
   ).then(() => {
     assert(ctx.attempts.at(-1).maxDepth === 1, 'null must fall back, not clamp to 0');
   });
+});
+
+log.push('');
+log.push('=== guard_selfcheck (read-only) ===');
+
+/** Fetch the globally registered selfcheck tool from a ctx. */
+function selfcheckOf(ctx) {
+  return ctx.globalRegistrations.get('guard_selfcheck');
+}
+
+await checkAsync('selfcheck: tool is registered globally with no parameters', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config());
+  const tool = selfcheckOf(ctx);
+  assert(tool !== undefined, 'guard_selfcheck was not registered globally');
+  assert(Object.keys(tool.parameters.properties).length === 0, 'selfcheck must take no params');
+  assert(/只读/.test(tool.description) && /不改任何状态/.test(tool.description),
+    'description must state it is read-only and changes no state');
+});
+
+await checkAsync('selfcheck: returns full shape and reflects live config', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config({
+    routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }],
+    deniedRoutes: [{ provider: 'bad', model: 'x' }],
+    enforcement: 'both',
+    replaceSubagentTool: true,
+  }));
+  const tool = selfcheckOf(ctx);
+  const report = await tool.execute();
+  assert(typeof report.active === 'boolean', 'active must be boolean');
+  assert(typeof report.strict === 'boolean', 'strict must be boolean');
+  assert(report.enforcement === 'both', 'enforcement must be both');
+  assert(typeof report.officialAllowList.available === 'boolean', 'officialAllowList.available must be boolean');
+  assert(Array.isArray(report.ownRoutes), 'ownRoutes must be array');
+  assert(Array.isArray(report.deniedRoutes), 'deniedRoutes must be array');
+  assert(report.deniedRoutes.length === 1 && report.deniedRoutes[0].provider === 'bad', 'deniedRoutes content wrong');
+  assert(typeof report.effectiveRouteCount === 'number', 'effectiveRouteCount must be number');
+  assert(report.gates.agentCreated === true && report.gates.startActivation === true, 'both gates should be on');
+  assert(report.replacement.installed === false, 'replacement not installed until an agent is created');
+  assert(typeof report.recentDenials === 'number', 'recentDenials must be number');
+  assert(Array.isArray(report.checks) && report.checks.length > 0, 'checks must be a non-empty array');
+  for (const c of report.checks) {
+    assert(typeof c.name === 'string' && typeof c.ok === 'boolean' && 'detail' in c && 'hint' in c,
+      `malformed check entry: ${JSON.stringify(c)}`);
+  }
+});
+
+await checkAsync('selfcheck: service unavailable -> available:false, error set, NO throw', async () => {
+  const ctx = makeCtx(); // no subagentModelSelection service
+  apply(ctx, config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }] }));
+  const tool = selfcheckOf(ctx);
+  let report;
+  try {
+    report = await tool.execute(); // must not throw
+  } catch (error) {
+    throw new Error(`selfcheck threw when service unavailable: ${error.message}`);
+  }
+  assert(report.officialAllowList.available === false, 'available must be false when service missing');
+  assert(typeof report.officialAllowList.error === 'string' && report.officialAllowList.error.length > 0,
+    'error must be set when service missing');
+  assert(report.officialAllowList.routes.length === 0, 'routes must be empty when service missing');
+});
+
+await checkAsync('selfcheck: official enabled=false -> no error, routes empty, NO throw', async () => {
+  const ctx = withOfficial({ enabled: false, allowedModels: [{ provider: 'official', model: 'm1' }] });
+  apply(ctx, config({ routes: [] }));
+  const tool = selfcheckOf(ctx);
+  let report;
+  try {
+    report = await tool.execute();
+  } catch (error) {
+    throw new Error(`selfcheck threw on enabled=false: ${error.message}`);
+  }
+  assert(report.officialAllowList.available === true, 'service exists -> available true');
+  assert(report.officialAllowList.enabled === false, 'enabled must mirror official false');
+  assert(report.officialAllowList.error === undefined, 'enabled=false is normal: must NOT set error');
+  assert(report.officialAllowList.routes.length === 0, 'routes must be empty when disabled');
+});
+
+await checkAsync('selfcheck: official enabled but empty (current() throws) -> error set', async () => {
+  const ctx = withOfficial(undefined, 'enabled subagent model selection requires at least one allowed model');
+  apply(ctx, config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }] }));
+  const tool = selfcheckOf(ctx);
+  let report;
+  try {
+    report = await tool.execute(); // must not throw
+  } catch (error) {
+    throw new Error(`selfcheck threw on current() failure: ${error.message}`);
+  }
+  assert(report.officialAllowList.available === true, 'service exists -> available true');
+  assert(typeof report.officialAllowList.error === 'string' && /current\(\)/.test(report.officialAllowList.error),
+    'error must capture the current() throw');
+  assert(report.officialAllowList.routes.length === 0, 'routes must be empty when current() throws');
+});
+
+await checkAsync('selfcheck: three error categories are distinguishable', async () => {
+  // build the three reports
+  const ctxMissing = makeCtx();
+  apply(ctxMissing, config());
+  const rMissing = await selfcheckOf(ctxMissing).execute();
+
+  const ctxDisabled = withOfficial({ enabled: false, allowedModels: [] });
+  apply(ctxDisabled, config());
+  const rDisabled = await selfcheckOf(ctxDisabled).execute();
+
+  const ctxThrowing = withOfficial(undefined, 'empty list');
+  apply(ctxThrowing, config());
+  const rThrowing = await selfcheckOf(ctxThrowing).execute();
+
+  assert(rMissing.officialAllowList.available === false && rMissing.officialAllowList.error, 'category 1: unavailable');
+  assert(rDisabled.officialAllowList.available === true && rDisabled.officialAllowList.enabled === false
+    && rDisabled.officialAllowList.error === undefined, 'category 2: disabled is not an error');
+  assert(rThrowing.officialAllowList.available === true && rThrowing.officialAllowList.error, 'category 3: current() throw');
+});
+
+await checkAsync('selfcheck: never throws even when get()/logger are hostile', async () => {
+  const ctx = makeCtx();
+  ctx.get = () => { throw new Error('get exploded'); };
+  ctx.logger = { warn() { throw new Error('logger exploded'); } };
+  apply(ctx, config());
+  const tool = selfcheckOf(ctx);
+  let report;
+  try {
+    report = await tool.execute();
+  } catch (error) {
+    throw new Error(`selfcheck must never throw: ${error.message}`);
+  }
+  assert(report && Array.isArray(report.checks), 'report shape must survive hostile env');
 });
 
 console.log(log.join('\n'));
