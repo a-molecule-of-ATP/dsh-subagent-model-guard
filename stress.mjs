@@ -5,7 +5,8 @@
  * shadowing, subagents service, sessions) and exercises the paths that a real
  * install would hit. Run with: node stress.mjs
  */
-import { apply } from './index.js';
+import { apply, Config } from './index.js';
+import { updateVolatile } from '@deepseek-ai/cosmokit';
 
 let failures = 0;
 const log = [];
@@ -99,6 +100,7 @@ function makeAgent(options = {}) {
 function makeCtx({ routes, subagentCalls = [] } = {}) {
   const listeners = { 'agent/created': [], 'internal/get': [], 'tools/pre-execute': [], 'agent/pre-step': [] };
   const attempts = [];
+  const logs = [];
   const subagents = {
     startActivation: async (spec) => {
       attempts.push(spec);
@@ -116,8 +118,12 @@ function makeCtx({ routes, subagentCalls = [] } = {}) {
     get(name) {
       return services[name];
     },
+    logger: {
+      warn(message) { logs.push(String(message)); },
+    },
     attempts,
     listeners,
+    logs,
     emitAgentCreated(agent) {
       for (const listener of listeners['agent/created']) listener({ agent });
     },
@@ -291,6 +297,36 @@ await checkAsync('replacement: recursion — child gets its own tool', async () 
 });
 
 log.push('');
+await checkAsync('replacement: subagent_fork is NOT denied (only subagent is replaced)', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config());
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  const denied = agent.restrictions.flatMap((r) => r.deny ?? []);
+  assert(!denied.includes('subagent_fork'), 'subagent_fork must keep its official tool');
+  assert(denied.includes('subagent'), 'official subagent should be masked');
+});
+
+await checkAsync('replacement: a throwing restrict() does not skip register', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config());
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  // Restrict throwing is exactly what an unknown global tool name does.
+  agent.ctx.tools.restrict = () => { throw new Error('tools.restrict() names unknown global tool "subagent"'); };
+  ctx.emitAgentCreated(agent);
+  assert(agent.registrations.has('subagent'), 'register must run even when restrict throws');
+});
+
+await checkAsync('replacement: repeated agent/created is idempotent', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config());
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  ctx.emitAgentCreated(agent);
+  assert(agent.restrictions.length === 1, `restrict ran ${agent.restrictions.length} times`);
+  assert(agent.registrations.has('subagent'), 'tool should still be registered');
+});
+
 log.push('=== gate: agent/created (A) ===');
 
 await check('gate A: denied route throws that fails creation', () => {
@@ -353,6 +389,87 @@ await checkAsync('gate B: other services untouched', async () => {
   const other = { anything: true };
   const same = listener({}, 'llm', undefined, () => other);
   assert(same === other, 'non-subagents service was wrapped');
+});
+
+log.push('');
+log.push('=== official allow-list (subagentModelSelection) ===');
+
+/** Install a fake `subagentModelSelection` service on a fresh ctx. */
+function withOfficial(current, throwing) {
+  const ctx = makeCtx();
+  const originalGet = ctx.get;
+  ctx.get = (name) => {
+    if (name !== 'subagentModelSelection') return originalGet(name);
+    return {
+      current() {
+        if (throwing !== undefined) throw new Error(throwing);
+        return current;
+      },
+    };
+  };
+  return ctx;
+}
+
+await check('official: allowedModels are enforced without being in routes', () => {
+  const ctx = withOfficial({ enabled: true, allowedModels: [{ provider: 'official', model: 'm1' }] });
+  apply(ctx, config({ routes: [] }));
+  // Only the official list is configured: the guard must be ACTIVE.
+  assertThrows(() => ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'x' })), /不在白名单/);
+  ctx.emitAgentCreated(makeAgent({ provider: 'official', model: 'm1' })); // allowed
+});
+
+await check('official: enabled=false means NO restriction from that list', () => {
+  const ctx = withOfficial({ enabled: false, allowedModels: [{ provider: 'official', model: 'm1' }] });
+  apply(ctx, config({ routes: [] }));
+  // Disabled official list + empty routes => nothing to enforce => fail open.
+  ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'x' }));
+});
+
+await check('official: enabled with empty list falls back to routes (current() throws)', () => {
+  const ctx = withOfficial(undefined, 'enabled subagent model selection requires at least one allowed model');
+  apply(ctx, config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }] }));
+  ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' }));
+  assertThrows(() => ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'x' })), /不在白名单/);
+});
+
+await check('official: a throwing current() is logged once, not silently swallowed', () => {
+  const ctx = withOfficial(undefined, 'boom');
+  apply(ctx, config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }] }));
+  ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' }));
+  ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' }));
+  const hits = ctx.logs.filter((line) => line.includes('读取官方子智能体白名单失败'));
+  assert(hits.length === 1, `expected exactly one degradation log, got ${hits.length}`);
+});
+
+await check('official: missing service degrades to routes and warns once', () => {
+  const ctx = makeCtx(); // no subagentModelSelection in services
+  apply(ctx, config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }] }));
+  ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' }));
+  assertThrows(() => ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'x' })), /不在白名单/);
+  const hits = ctx.logs.filter((line) => line.includes('subagentModelSelection 服务不可用'));
+  assert(hits.length === 1, `expected exactly one degradation log, got ${hits.length}`);
+});
+
+await check('official: useOfficialAllowList=false ignores the official list', () => {
+  const ctx = withOfficial({ enabled: true, allowedModels: [{ provider: 'official', model: 'm1' }] });
+  apply(ctx, config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }], useOfficialAllowList: false }));
+  ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' }));
+  assertThrows(() => ctx.emitAgentCreated(makeAgent({ provider: 'official', model: 'm1' })), /不在白名单/);
+});
+
+await check('official: routes and official list merge without duplicates', () => {
+  const ctx = withOfficial({ enabled: true, allowedModels: [{ provider: 'official', model: 'm1' }] });
+  apply(ctx, config({ routes: [{ provider: 'official', model: 'm1' }, { provider: 'workbuddy', model: 'hy4flash-free' }] }));
+  const agent = makeAgent({ provider: 'other', model: 'x' });
+  try {
+    ctx.emitAgentCreated(agent);
+  } catch (error) {
+    // The same route must appear exactly once in the allowed-list message.
+    const count = (error.message.match(/official\/m1/g) ?? []).length;
+    assert(count === 1, `duplicate route in allow-list message (${count})`);
+    return;
+  }
+  throw new Error('off-list route should have been denied');
 });
 
 log.push('');
@@ -419,8 +536,10 @@ await check('missing scope tools does not throw', () => {
   // No tool ctx AND no route info: the gate must be skipped for a session that
   // does not look like a subagent, not denied for lacking a route.
   ctx.emitAgentCreated({ session: { header: {} } });
-  // A subagent with no route is still denied — that is the designed behaviour.
-  assertThrows(() => ctx.emitAgentCreated({ session: { header: { origin: 'subagent' } } }), /无法确认/);
+  // An unobservable route FAILS OPEN (external acp/SDK backends never expose a
+  // local route), so this must not throw — it logs once instead.
+  ctx.emitAgentCreated({ session: { header: { origin: 'subagent' } } });
+  assert(ctx.logs.some((line) => line.includes('无法确认子智能体路由')), 'fail-open should be logged');
 });
 
 await check('strict:false disables everything', () => {
@@ -458,45 +577,231 @@ await check('catch-up: agents.list throwing is swallowed', () => {
   apply(ctx, config());
 });
 
-await check('audit: off-list step route is logged, not rejected', () => {
+await checkAsync('audit: off-list step route is logged, and next() still runs', async () => {
   const ctx = makeCtx();
-  const warnings = [];
-  const originalWarn = console.warn;
-  console.warn = (message) => warnings.push(String(message));
-  try {
-    apply(ctx, config({ auditEveryStep: true }));
-    const listener = ctx.listeners['agent/pre-step']?.[0];
-    assert(listener !== undefined, 'no pre-step listener registered');
-    const decision = listener({
-      agent: { id: 'child-1' },
-      modelSelection: { provider: 'workbuddy', model: 'evil' },
-    });
-    assert(decision === undefined, 'audit must not return a decision');
-  } finally {
-    console.warn = originalWarn;
-  }
-  assert(warnings.some((w) => w.includes('审计')), 'off-list route was not logged');
+  apply(ctx, config({ auditEveryStep: true }));
+  const listener = ctx.listeners['agent/pre-step']?.[0];
+  assert(listener !== undefined, 'no pre-step listener registered');
+  // `agent/pre-step` is a WATERFALL: returning without calling next() vetoes the
+  // rest of the chain (including the built-in behaviour) and breaks every step.
+  let nextCalls = 0;
+  const decision = await listener(
+    { agent: { id: 'child-1' }, modelSelection: { provider: 'workbuddy', model: 'evil' } },
+    async () => {
+      nextCalls += 1;
+      return { kind: 'enter', messages: [] };
+    },
+  );
+  assert(nextCalls === 1, 'audit must forward to next() exactly once');
+  assert(decision?.kind === 'enter', 'audit must return the downstream decision');
+  assert(ctx.logs.some((w) => w.includes('审计')), 'off-list route was not logged');
 });
 
-await check('audit: allowed step route stays silent', () => {
+await checkAsync('audit: allowed step route stays silent', async () => {
   const ctx = makeCtx();
-  const warnings = [];
-  const originalWarn = console.warn;
-  console.warn = (message) => warnings.push(String(message));
-  try {
-    apply(ctx, config({ auditEveryStep: true }));
-    const listener = ctx.listeners['agent/pre-step'][0];
-    listener({ agent: { id: 'c' }, modelSelection: { provider: 'workbuddy', model: 'hy4flash-free' } });
-  } finally {
-    console.warn = originalWarn;
-  }
-  assert(!warnings.some((w) => w.includes('审计')), 'allowed route should not be logged');
+  apply(ctx, config({ auditEveryStep: true }));
+  const listener = ctx.listeners['agent/pre-step'][0];
+  let nextCalls = 0;
+  await listener(
+    { agent: { id: 'c' }, modelSelection: { provider: 'workbuddy', model: 'hy4flash-free' } },
+    async () => {
+      nextCalls += 1;
+      return { kind: 'enter', messages: [] };
+    },
+  );
+  assert(nextCalls === 1, 'allowed route must still forward');
+  assert(!ctx.logs.some((w) => w.includes('审计')), 'allowed route should not be logged');
 });
 
-await check('audit: not registered when disabled', () => {
+await checkAsync('audit: disabled flag forwards without logging', async () => {
   const ctx = makeCtx();
   apply(ctx, config({ auditEveryStep: false }));
-  assert((ctx.listeners['agent/pre-step'] ?? []).length === 0, 'audit listener should not exist');
+  // Registered unconditionally now (a settings write does not re-run apply, so
+  // registration cannot be the gate); the FLAG decides at dispatch time.
+  const listener = ctx.listeners['agent/pre-step'][0];
+  assert(listener !== undefined, 'listener should always be registered');
+  let nextCalls = 0;
+  await listener(
+    { agent: { id: 'c' }, modelSelection: { provider: 'workbuddy', model: 'evil' } },
+    async () => {
+      nextCalls += 1;
+      return { kind: 'enter', messages: [] };
+    },
+  );
+  assert(nextCalls === 1, 'disabled audit must still forward');
+  assert(!ctx.logs.some((w) => w.includes('审计')), 'disabled audit must not log');
+});
+
+log.push('=== live volatile config (no re-apply) ===');
+
+/** Parse a real Config so the fields are genuine volatile refs. */
+function parsedConfig(overrides = {}) {
+  return Config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }], ...overrides });
+}
+
+await check('live: a volatile write flips strict without re-running apply', () => {
+  const parsed = parsedConfig({ strict: true });
+  const ctx = makeCtx();
+  apply(ctx, parsed);
+  const bad = () => makeAgent({ provider: 'zzz', model: 'zzz' });
+  assertThrows(() => ctx.emitAgentCreated(bad()), /不在白名单/);
+  // This is exactly what the loader does for a settings write: it mutates the
+  // ref in place and does NOT re-run apply. A value captured in apply would
+  // still say `true` here.
+  updateVolatile(parsed.strict, parsedConfig({ strict: false }).strict);
+  ctx.emitAgentCreated(bad()); // must now pass
+  updateVolatile(parsed.strict, parsedConfig({ strict: true }).strict);
+  assertThrows(() => ctx.emitAgentCreated(bad()), /不在白名单/);
+});
+
+await check('live: a volatile write to routes takes effect', () => {
+  const parsed = parsedConfig();
+  const ctx = makeCtx();
+  apply(ctx, parsed);
+  ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' }));
+  updateVolatile(parsed.routes, parsedConfig({ routes: [{ provider: 'other', model: 'm' }] }).routes);
+  assertThrows(
+    () => ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' })),
+    /不在白名单/,
+  );
+  ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'm' }));
+});
+
+log.push('=== settings projection ===');
+
+await check('volatileForm(Config) is not undefined (entry survives describe())', async () => {
+  // dsh-settings drops any entry whose volatileForm is undefined; that is what
+  // made the whole Configuration page unreachable before.
+  const { volatileForm } = await import('./volatile-form.mjs');
+  const form = volatileForm(Config);
+  assert(form !== undefined, 'Config has no volatile field — the settings entry is dropped');
+  const fields = Object.keys(form.dict ?? {}).sort();
+  const expected = ['auditEveryStep', 'checkInherited', 'cwd', 'enforcement', 'replaceSubagentTool', 'routes', 'strict', 'useOfficialAllowList'];
+  assert(
+    JSON.stringify(fields) === JSON.stringify(expected.sort()),
+    `projected fields mismatch: ${fields.join(',')}`,
+  );
+});
+
+log.push('=== deniedRoutes (blacklist) ===');
+
+await check('deny: a denied route is refused even when also allow-listed', () => {
+  const ctx = makeCtx();
+  apply(ctx, config({
+    routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }],
+    deniedRoutes: [{ provider: 'workbuddy', model: 'hy4flash-free' }],
+  }));
+  // Explicit denial outranks the allow-list.
+  assertThrows(
+    () => ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' })),
+    /被显式拒绝/,
+  );
+});
+
+await check('deny: a denied route is refused even when the official list allows it', () => {
+  const ctx = makeCtx();
+  const originalGet = ctx.get;
+  ctx.get = (name) => (name === 'subagentModelSelection'
+    ? { current: () => ({ enabled: true, allowedModels: [{ provider: 'official', model: 'm1' }] }) }
+    : originalGet(name));
+  apply(ctx, config({ routes: [], deniedRoutes: [{ provider: 'official', model: 'm1' }] }));
+  assertThrows(() => ctx.emitAgentCreated(makeAgent({ provider: 'official', model: 'm1' })), /被显式拒绝/);
+});
+
+await check('deny: the message distinguishes denial from a plain miss', () => {
+  const ctx = makeCtx();
+  apply(ctx, config({
+    routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }],
+    deniedRoutes: [{ provider: 'bad', model: 'x' }],
+  }));
+  let deniedMessage = '';
+  try { ctx.emitAgentCreated(makeAgent({ provider: 'bad', model: 'x' })); } catch (e) { deniedMessage = e.message; }
+  let missMessage = '';
+  try { ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'y' })); } catch (e) { missMessage = e.message; }
+  assert(deniedMessage.includes('被显式拒绝'), `denied message wrong: ${deniedMessage}`);
+  assert(missMessage.includes('不在白名单'), `miss message wrong: ${missMessage}`);
+  assert(!missMessage.includes('被显式拒绝'), 'a plain miss must not claim a denial');
+});
+
+await check('deny: a deny-only configuration still enforces', () => {
+  const ctx = makeCtx();
+  // No allow-list at all — only a blacklist. This is a valid "deny these" policy.
+  apply(ctx, config({ routes: [], deniedRoutes: [{ provider: 'bad', model: 'x' }] }));
+  assertThrows(() => ctx.emitAgentCreated(makeAgent({ provider: 'bad', model: 'x' })), /被显式拒绝/);
+  // Everything else passes, because no allow-list restricts it.
+  ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'y' }));
+});
+
+await check('deny: empty deniedRoutes leaves the allow-list semantics intact', () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }] }));
+  ctx.emitAgentCreated(makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' }));
+  assertThrows(() => ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'y' })), /不在白名单/);
+});
+
+log.push('');
+log.push('=== includeAllowedListInError ===');
+
+await check('allow-list in error: on by default', () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }] }));
+  let message = '';
+  try { ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'y' })); } catch (e) { message = e.message; }
+  assert(message.includes('允许：'), 'allow-list should be listed by default');
+  assert(message.includes('workbuddy/hy4flash-free'), 'allow-list contents missing');
+});
+
+await check('allow-list in error: off hides every other model name', () => {
+  const ctx = makeCtx();
+  apply(ctx, config({
+    routes: [{ provider: 'workbuddy', model: 'hy4flash-free' }],
+    includeAllowedListInError: false,
+  }));
+  let message = '';
+  try { ctx.emitAgentCreated(makeAgent({ provider: 'other', model: 'y' })); } catch (e) { message = e.message; }
+  assert(!message.includes('允许：'), `allow-list leaked: ${message}`);
+  assert(!message.includes('hy4flash-free'), `another model name leaked: ${message}`);
+  assert(message.includes('other/y'), 'the attempted route must still be named');
+});
+
+log.push('');
+log.push('=== maxDepth ===');
+
+await check('maxDepth: unset keeps the deployment default', () => {
+  const ctx = makeCtx();
+  apply(ctx, config());
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  return agent.registrations.get('subagent').execute(
+    { description: 'd', prompt: 'p' }, { agent, signal: {} },
+  ).then(() => {
+    // makeCtx's resolveMaxDepth(undefined) returns 1.
+    assert(ctx.attempts.at(-1).maxDepth === 1, 'should fall back to resolveMaxDepth');
+  });
+});
+
+await check('maxDepth: a configured depth overrides the deployment default', () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ maxDepth: 3 }));
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  return agent.registrations.get('subagent').execute(
+    { description: 'd', prompt: 'p' }, { agent, signal: {} },
+  ).then(() => {
+    assert(ctx.attempts.at(-1).maxDepth === 3, `expected 3, got ${ctx.attempts.at(-1).maxDepth}`);
+  });
+});
+
+await check('maxDepth: null is treated as unset, never 0', () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ maxDepth: null }));
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  return agent.registrations.get('subagent').execute(
+    { description: 'd', prompt: 'p' }, { agent, signal: {} },
+  ).then(() => {
+    assert(ctx.attempts.at(-1).maxDepth === 1, 'null must fall back, not clamp to 0');
+  });
 });
 
 console.log(log.join('\n'));
