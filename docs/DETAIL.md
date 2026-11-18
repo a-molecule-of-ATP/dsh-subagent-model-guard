@@ -80,13 +80,17 @@ The cost is that it shadows only `subagent`: `subagent_fork` keeps the official 
 }
 ```
 
-**Ban a provider family** (the blacklist wins even if it is allow-listed):
+**Deny one specific route** (the blacklist wins even if the same route is allow-listed):
 ```json
 {
-  "deniedRoutes": [{ "provider": "untrusted", "model": "*" }],
-  "routes": [{ "provider": "untrusted", "model": "*" }]
+  "deniedRoutes": [{ "provider": "untrusted", "model": "some-model" }]
 }
 ```
+
+> **There is no wildcard.** `routes` and `deniedRoutes` are matched exactly — provider
+> and model must both be identical. Writing `"model": "*"` denies one model literally
+> named `*`. To ban every model under a provider you must list each one in
+> `deniedRoutes`; anything you miss stays allowed.
 
 **Make a new model usable in old sessions immediately** (enable the replacement to bypass the frozen snapshot):
 ```json

@@ -883,14 +883,23 @@ export function apply(ctx, config) {
         if (prompt === '') throw new Error('subagent requires a non-empty prompt');
 
         const guardOn = active();
+        // A half-specified pair is a malformed call, not an unresolvable one: the
+        // caller named a provider but no model (or the reverse), so refusing is
+        // the only honest answer. Both-omitted is the documented "inherit".
+        const explicitProvider = routeValue(args?.provider);
+        const explicitModel = routeValue(args?.model);
+        if ((explicitProvider === undefined) !== (explicitModel === undefined)) {
+          recordDenial('unknown', sessionRoute(parent?.session) ?? agentRoute(parent), undefined,
+            'provider 与 model 只给了其中一个');
+          throw denial('provider 与 model 必须同时提供，或两者都省略以继承父级路由。');
+        }
         const route = resolveDelegationRoute(args, parent);
         if (route === undefined && guardOn) {
-          // With the guard on, an unresolvable route cannot be validated, and
-          // inheriting silently would defeat the allow-list. With it off this
-          // must stay a pass-through so the tool matches the official one.
-          const reason = '无法确定子智能体路由：请显式提供 provider 与 model。';
-          recordDenial('unknown', sessionRoute(parent?.session) ?? agentRoute(parent), undefined, reason);
-          throw denial(reason);
+          // Same policy as both gates: an unresolvable route cannot be checked,
+          // so the call passes through with a record instead of failing.
+          warnOnce('替身工具无法确认子智能体路由（provider/model 缺失），放行', undefined);
+          recordDenial('unknown', sessionRoute(parent?.session) ?? agentRoute(parent), undefined,
+            '替身工具无法确认子智能体路由，放行');
         }
         if (route !== undefined && guardOn) {
           const { outcome } = judge(route);

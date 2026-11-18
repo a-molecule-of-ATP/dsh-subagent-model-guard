@@ -259,7 +259,7 @@ await checkAsync('replacement: half-specified pair rejected', async () => {
   const tool = agent.registrations.get('subagent');
   await assertRejects(
     () => tool.execute({ description: 'd', prompt: 'p', model: 'deepseek-v4.1-flash' }, { agent, signal: {} }),
-    /无法确定/,
+    /必须同时提供/,
   );
 });
 
@@ -687,14 +687,14 @@ await check('live: a volatile write to routes takes effect', () => {
 
 log.push('=== settings projection ===');
 
-await check('volatileForm(Config) is not undefined (entry survives describe())', async () => {
+await checkAsync('volatileForm(Config) is not undefined (entry survives describe())', async () => {
   // dsh-settings drops any entry whose volatileForm is undefined; that is what
   // made the whole Configuration page unreachable before.
   const { volatileForm } = await import('./volatile-form.mjs');
   const form = volatileForm(Config);
   assert(form !== undefined, 'Config has no volatile field — the settings entry is dropped');
   const fields = Object.keys(form.dict ?? {}).sort();
-  const expected = ['auditEveryStep', 'checkInherited', 'deniedRoutes', 'enforcement', 'includeAllowedListInError', 'maxDepth', 'recentDenialLimit', 'replaceSubagentTool', 'routes', 'strict', 'useOfficialAllowList'];
+  const expected = ['auditDedupeMs', 'auditEveryStep', 'checkInherited', 'deniedRoutes', 'enforcement', 'includeAllowedListInError', 'maxDepth', 'recentDenialLimit', 'replaceSubagentTool', 'routes', 'strict', 'useOfficialAllowList'];
   assert(
     JSON.stringify(fields) === JSON.stringify(expected.sort()),
     `projected fields mismatch: ${fields.join(',')}`,

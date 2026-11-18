@@ -79,13 +79,16 @@ DSH 官方的子智能体白名单（`subagent-model-selection-settings` 的 `al
 }
 ```
 
-**禁止某一族 provider**（黑名单优先，即使它在白名单里）：
+**否决一个具体路由**（黑名单优先，即使它在白名单里也照样拒）：
 ```json
 {
-  "deniedRoutes": [{ "provider": "untrusted", "model": "*" }],
-  "routes": [{ "provider": "untrusted", "model": "*" }]
+  "deniedRoutes": [{ "provider": "untrusted", "model": "some-model" }]
 }
 ```
+
+> **没有通配。** `routes` 与 `deniedRoutes` 都是**精确匹配**（provider 与 model 逐字相同才算命中）。
+> 写 `"model": "*"` 只会拒绝一个名字真的叫 `*` 的模型。要封掉一个 provider 下的所有模型，
+> 只能把每个模型逐个列进 `deniedRoutes`；漏掉的那个不会被拦住。
 
 **新模型上线后老会话立刻可用**（开启替身工具，绕开冻结快照）：
 ```json
