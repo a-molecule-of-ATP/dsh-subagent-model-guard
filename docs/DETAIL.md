@@ -2,6 +2,10 @@
 
 The subagent route guard validates the `provider/model` a subagent will actually run on before dispatch, using allow-lists, a blacklist, and two optional checkpoints to control "who may delegate to whom".
 
+> **Terminology (read this first)**
+> - **Arguments** are passed by the agent on each dispatch and apply to that dispatch only, e.g. `provider`, `cwd`.
+> - **Settings** are configured by you on the plugin page and persist across dispatches, e.g. `enforcement`, `replaceSubagentTool`.
+
 ## What problem it solves
 
 DSH's official subagent allow-list (`subagent-model-selection-settings`'s `allowedModels`) is frozen into a snapshot when a session starts: a model published while a session is open cannot be used in that old session. This plugin solves exactly that, and adds an explicit "who may delegate to whom" policy — you decide which routes are allowed and which are explicitly denied. The official list is read live through `subagentModelSelection.current()` and recomputed on every check, so edits to the official allow-list and to this plugin's config take effect immediately, with no reload.
@@ -50,7 +54,7 @@ The allow-list has two sources: the official `allowedModels` read when `useOffic
 
 ## Choosing a checkpoint
 
-`enforcement` decides where to validate; the default is `agent-created`:
+`enforcement` is a setting (configured on the plugin page, persisting across dispatches) that decides where to validate; it defaults to `agent-created`:
 
 - **`agent-created`**: validates at the `agent/created` event. Stable contract and covers `agent()` inside workflows; the cost is that a refusal leaves an empty session record behind.
 - **`start-activation`**: wraps `ctx.subagents` and refuses before the agent is constructed — zero residue; the cost is a dependency on the internal `internal/get` hook.
@@ -62,7 +66,7 @@ Both gates are always registered and behave according to live `enforcement`; the
 
 ![One call, two paths, two outcomes](snapshot-vs-replacement.svg)
 
-`replaceSubagentTool` (default off) replaces the official `subagent` tool with this plugin's own (a scoped shadow), letting subagents go straight to `startActivation` and bypass the snapshot frozen at session start — newly published models become usable immediately even in old sessions.
+`replaceSubagentTool` is a setting (configured on the plugin page, persisting across dispatches, off by default); it replaces the official `subagent` tool with this plugin's own (a scoped shadow), letting subagents go straight to `startActivation` and bypass the snapshot frozen at session start — newly published models become usable immediately even in old sessions.
 
 The cost is that it shadows only `subagent`: `subagent_fork` keeps the official tool and stays bound by the same session model snapshot. The replacement is registered into each agent scope at `agent/created`, with a catch-up pass for agents that already exist.
 

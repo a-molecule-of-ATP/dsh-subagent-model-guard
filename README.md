@@ -2,6 +2,10 @@
 
 一个为 DeepSeek Harness 的「派发子智能体」把门的 DSH 插件：按 provider/model 白名单拦截子智能体路由，堵住「省略模型就静默回退父级模型」这条绕过口子，并可选替换官方 `subagent` 工具让新上架模型立即可用。**它不新增业务工具，只守卫与替换已有的派发能力，另提供一个只读诊断工具。**
 
+> **术语说明（请先读）**
+> - **参数**：智能体每次派发子智能体时传入的值，只对本次派发生效，例如 `provider`、`model`、`cwd`。
+> - **设置**：你在插件页配置、跨派发持续生效的值，例如 `strict`、`routes`、`enforcement`。
+
 ## 它提供什么
 
 它对 DSH 已有的派发链路做四件事：
@@ -13,7 +17,7 @@
 
 默认放行依据是 DSH 官方的子智能体白名单（`useOfficialAllowList:true`，读 `subagentModelSelection` 服务的 `allowedModels`），本插件的 `routes` 作为额外补充；`deniedRoutes` 是显式拒绝，优先级高于一切白名单。空白名单 = 不拦截（与 DSH 原生行为一致），但「只有拒绝项」的配置仍然生效（黑名单模式）。
 
-它带**设置页**：总开关、白名单来源、允许/拒绝路由列表、错误信息是否暴露名单、审计与去重、执行点（三选一）、工具替换及其参数（`maxDepth`、`checkInherited`）。原设置项 `cwd` 已移除；`cwd` 现在是子智能体工具始终可用的参数。
+它带**设置页**：`strict` 设置、白名单来源、允许/拒绝路由列表、错误信息是否暴露名单、审计与去重、执行点（三选一）、工具替换及其相关设置（`maxDepth`、`checkInherited`）。原 `cwd` 设置已移除；`cwd` 现在是子智能体工具始终可用的参数。
 
 ## 安装（本地 bundle）
 
@@ -35,11 +39,11 @@
 
 `id` 是 Loader 行 id，`name` 必须与 `package.json` 的 `name` 一致。装好后到插件页配置白名单/黑名单与执行点；若要用新上架模型，打开 `replaceSubagentTool`。
 
-## 配置项
+## 设置项
 
 与 `index.js` 中的 `Config`（Schemastery schema）完全一致，共 **12 项**；全部为 `.volatile()`，保存后立即生效，无需重启插件：
 
-| 字段 | 类型 | 默认值 | 说明 |
+| 字段 | 类型 | 缺省值 | 说明 |
 |---|---|---|---|
 | `strict` | boolean | `true` | 关闭后整段守卫失效，所有路由一律放行。 |
 | `useOfficialAllowList` | boolean | `true` | 直接采用 DSH 官方子智能体白名单（`subagent-model-selection-settings` 的 `allowedModels`）作为放行依据；开启后下方 `routes` 只作额外补充。 |
@@ -54,14 +58,14 @@
 | `checkInherited` | boolean | `true` | 是否检查「省略模型、回退父级」的继承路径。 |
 | `auditEveryStep` | boolean | `false` | 在每一步模型调用时检查路由是否在白名单内，只记录不拦截（此时拒绝会导致「创建成功却立刻失败」，故只写 host 日志）。 |
 
-> 原第 13 项 `cwd` 已删除：`cwd` 不再是配置字段，影子 `subagent` 工具的 `cwd` 参数现在始终可用，无需先开启某个设置。
+> 原第 13 项 `cwd` 设置已删除：`cwd` 不再是一个设置项，影子 `subagent` 工具的 `cwd` 参数现在始终可用，无需先开启某个设置。
 
 ## 已知限制 / 注意事项
 
 - **vendored 依赖**：`node_modules/@deepseek-ai/schemastery` 与 `@deepseek-ai/cosmokit` 随包附带（见 `VENDORED.md`），只能用 `link:` 安装；`npm pack` / 仓库安装会丢掉 `node_modules` 导致配置表单失效。升级 DSH 后需从新 `app.asar` 重新提取对齐版本。
 - **执行点有取舍**：`agent-created` 被拒会留下一个空 session 记录；`start-activation` 依赖内部 `internal/get` 服务，可能在未来 DSH 版本变动；按需选择 `both`。
 - **替换工具仅覆盖 `subagent`**：`subagent_fork` 因 provider 语义不同刻意不替换；`tools/pre-execute` 层仍会对官方 `subagent_fork` 给出拒绝说明，但它本身不会被影子实现接管。影子工具支持 `cwd` 参数（始终可用），但不支持 `fork` provider。
-- **官方白名单读取依赖 `subagentModelSelection` 服务**；服务不可用、官方开关未启用（`enabled !== true`）或其 `current()` 抛错时，本次只按本插件自己的 `routes` 校验，并通过 `ctx.logger` 单次告警。
+- **官方白名单读取依赖 `subagentModelSelection` 服务**；服务不可用、官方 `enabled` 未开启（`enabled !== true`）或其 `current()` 抛错时，本次只按本插件自己的 `routes` 校验，并通过 `ctx.logger` 单次告警。
 - **拒绝记录不落盘**：`recentDenialLimit` 只影响内存缓冲，重启即清空——这是刻意设计（模型名属于隐私）。`guard_selfcheck` 读取的拒绝计数同样只反映当前进程内存。
 - `maxDepth:null` 表示「未设置」（沿用部署默认），不要误解为 0（0 会被解读成硬禁止递归）；它是上限语义，不会突破 DSH 自身的深度限制。
 - `guard_selfcheck` 只报告状态、不修改任何配置或队列；即使某个配置引用或服务损坏，其外层捕获也保证它不会抛错（会以 `ok:false` 的 check 呈现）。

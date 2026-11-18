@@ -2,6 +2,10 @@
 
 子智能体路由守卫在子智能体派发前校验它实际会运行的 `provider/model`，用白名单、黑名单和两个可选拦截点控制「谁能派给谁」。
 
+> **术语说明（请先读）**
+> - **参数**：智能体每次派发子智能体时传入的值，只对本次派发生效，例如 `provider`、`cwd`。
+> - **设置**：你在插件页配置、跨派发持续生效的值，例如 `enforcement`、`replaceSubagentTool`。
+
 ## 它解决什么问题
 
 DSH 官方的子智能体白名单（`subagent-model-selection-settings` 的 `allowedModels`）在会话启动时被冻结成一份快照：会话开着的时候新上架的模型，在老会话里用不了。这个插件要解决的就是这件事，并额外提供一套「谁能派给谁」的显式策略——哪些路由允许、哪些显式拒绝，都由你说了算。官方名单通过 `subagentModelSelection.current()` 实时读取，每次校验都重算，所以官方白名单的改动和本插件配置的改动都能立刻生效，无需重载。
@@ -49,7 +53,7 @@ DSH 官方的子智能体白名单（`subagent-model-selection-settings` 的 `al
 
 ## 两个拦截点怎么选
 
-`enforcement` 决定在哪儿校验，默认 `agent-created`：
+`enforcement` 是一个设置（在插件页配置、跨派发持续生效），决定在哪儿校验，缺省为 `agent-created`：
 
 - **`agent-created`**：在 `agent/created` 事件处校验。契约稳定、覆盖 workflow 里的 `agent()`；代价是被拒时会留下一个空的 session 记录。
 - **`start-activation`**：包住 `ctx.subagents`，在 agent 构造之前拒绝，零残留；代价是依赖内部的 `internal/get` 钩子。
@@ -59,9 +63,9 @@ DSH 官方的子智能体白名单（`subagent-model-selection-settings` 的 `al
 
 ## 替身工具
 
-![同一个调用，两条路径，两种结果](snapshot-vs-replacement.svg)
+![同一个调用，两条路径，两种结果](snapshot-vs-replacement.zh.svg)
 
-`replaceSubagentTool`（默认关闭）用本插件自己的 `subagent` 工具取代官方工具（一个 scoped shadow），让子智能体直接走 `startActivation`，绕开会话启动时冻结的模型快照——新上架的模型在老会话里也能立即可用。
+`replaceSubagentTool` 是一个设置（在插件页配置、跨派发持续生效，缺省关闭），它用本插件自己的 `subagent` 工具取代官方工具（一个 scoped shadow），让子智能体直接走 `startActivation`，绕开会话启动时冻结的模型快照——新上架的模型在老会话里也能立即可用。
 
 代价是它只 shadow `subagent` 这一个工具：`subagent_fork` 仍然使用官方工具，继续受同一份会话模型快照限制。替身工具在 `agent/created` 时注册到各个 agent scope，并对已存在的 agent 做一次补齐。
 

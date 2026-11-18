@@ -1,0 +1,40 @@
+<svg width="1280" height="520" viewBox="0 0 1280 520" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7a99" />
+    </marker>
+  </defs>
+
+  <text x="400" y="48" text-anchor="middle" font-size="17" fill="#8b93a7">官方 subagent 工具</text>
+  <text x="910" y="48" text-anchor="middle" font-size="17" fill="#8b93a7">本插件的替身工具</text>
+
+  <!-- 各自知道的放行名单 -->
+  <rect x="200" y="80" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
+  <text x="400" y="114" text-anchor="middle" font-size="16" fill="#dfe4ee">allowedModels = { A }</text>
+  <text x="400" y="136" text-anchor="middle" font-size="13" fill="#8b93a7">会话启动时冻结</text>
+
+  <rect x="710" y="80" width="400" height="78" rx="14" fill="#1a1d28" stroke="#2e3546" stroke-width="2" stroke-dasharray="5 6" />
+  <text x="910" y="125" text-anchor="middle" font-size="15" fill="#6b7a99">没有快照</text>
+
+  <!-- 暴露差异的事件 -->
+  <rect x="200" y="206" width="910" height="54" rx="27" fill="#1b2437" stroke="#2f4a6d" stroke-width="2" />
+  <text x="655" y="240" text-anchor="middle" font-size="16" fill="#a9c2e6">模型 B 上线 —— 不在冻结的名单里</text>
+
+  <!-- 同一个调用，两条路径 -->
+  <rect x="200" y="300" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
+  <text x="400" y="334" text-anchor="middle" font-size="16" fill="#dfe4ee">subagent( provider: B )</text>
+  <text x="400" y="356" text-anchor="middle" font-size="13" fill="#8b93a7">拿快照校验</text>
+
+  <rect x="710" y="300" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
+  <text x="910" y="334" text-anchor="middle" font-size="16" fill="#dfe4ee">subagent( provider: B )</text>
+  <text x="910" y="356" text-anchor="middle" font-size="13" fill="#8b93a7">直连 startActivation( B )</text>
+
+  <line x1="400" y1="378" x2="400" y2="418" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#arrow)" />
+  <line x1="910" y1="378" x2="910" y2="418" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#arrow)" />
+
+  <rect x="280" y="424" width="240" height="54" rx="27" fill="#3a1f27" stroke="#e0556a" stroke-width="2" />
+  <text x="400" y="458" text-anchor="middle" font-size="16" fill="#f0909f">被拒绝</text>
+
+  <rect x="790" y="424" width="240" height="54" rx="27" fill="#17301f" stroke="#4cc38a" stroke-width="2" />
+  <text x="910" y="458" text-anchor="middle" font-size="16" fill="#7fdba8">放行</text>
+</svg>
