@@ -1,0 +1,65 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="Consolas, 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7a99" />
+    </marker>
+    <marker id="r" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#e0556a" />
+    </marker>
+    <marker id="g" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#4cc38a" />
+    </marker>
+  </defs>
+
+  <!-- 起点 -->
+  <rect x="380" y="64" width="320" height="60" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
+  <text x="540" y="101" text-anchor="middle" font-size="16" fill="#dfe4ee">subagent / subagent_fork</text>
+
+  <!-- 1. 路由可判？ -->
+  <line x1="540" y1="124" x2="540" y2="156" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#a)" />
+  <rect x="380" y="162" width="320" height="64" rx="14" fill="#1b2437" stroke="#2f4a6d" stroke-width="2" />
+  <text x="540" y="190" text-anchor="middle" font-size="15" fill="#a9c2e6">provider / model 可判？</text>
+  <text x="540" y="211" text-anchor="middle" font-size="12" fill="#6b7a99">两个都没给 = 继承父级</text>
+
+  <path d="M 700 194 L 760 194" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#a)" />
+  <rect x="766" y="166" width="420" height="56" rx="28" fill="#1b2437" stroke="#2f4a6d" stroke-width="2" />
+  <text x="976" y="192" text-anchor="middle" font-size="13" fill="#a9c2e6">无法判定 → 放行 + 记录</text>
+  <text x="976" y="210" text-anchor="middle" font-size="12" fill="#6b7a99">外部 acp / SDK 后端不触发 agent/created</text>
+
+  <!-- 2. 黑名单 -->
+  <line x1="540" y1="226" x2="540" y2="258" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#a)" />
+  <rect x="380" y="264" width="320" height="56" rx="14" fill="#1b2437" stroke="#2f4a6d" stroke-width="2" />
+  <text x="540" y="298" text-anchor="middle" font-size="15" fill="#a9c2e6">命中 deniedRoutes？</text>
+
+  <path d="M 700 292 L 760 292" stroke="#e0556a" stroke-width="2.5" marker-end="url(#r)" />
+  <text x="730" y="282" text-anchor="middle" font-size="12" fill="#f0909f">是</text>
+  <rect x="766" y="266" width="300" height="52" rx="26" fill="#3a1f27" stroke="#e0556a" stroke-width="2" />
+  <text x="916" y="298" text-anchor="middle" font-size="14" fill="#f0909f">拒绝（黑名单优先）</text>
+
+  <!-- 3. 白名单 -->
+  <line x1="540" y1="320" x2="540" y2="352" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#a)" />
+  <text x="556" y="342" font-size="12" fill="#6b7a99">否</text>
+  <rect x="380" y="358" width="320" height="64" rx="14" fill="#1b2437" stroke="#2f4a6d" stroke-width="2" />
+  <text x="540" y="384" text-anchor="middle" font-size="15" fill="#a9c2e6">在放行名单里？</text>
+  <text x="540" y="405" text-anchor="middle" font-size="12" fill="#6b7a99">官方 allowedModels ∪ routes</text>
+
+  <path d="M 700 390 L 760 390" stroke="#e0556a" stroke-width="2.5" marker-end="url(#r)" />
+  <text x="730" y="380" text-anchor="middle" font-size="12" fill="#f0909f">否</text>
+  <rect x="766" y="364" width="300" height="52" rx="26" fill="#3a1f27" stroke="#e0556a" stroke-width="2" />
+  <text x="916" y="396" text-anchor="middle" font-size="14" fill="#f0909f">拒绝（不在名单内）</text>
+
+  <!-- 4. 放行 -->
+  <line x1="540" y1="422" x2="540" y2="454" stroke="#4cc38a" stroke-width="2.5" marker-end="url(#g)" />
+  <text x="556" y="444" font-size="12" fill="#7fdba8">是</text>
+  <rect x="380" y="460" width="320" height="56" rx="28" fill="#17301f" stroke="#4cc38a" stroke-width="2" />
+  <text x="540" y="494" text-anchor="middle" font-size="15" fill="#7fdba8">放行</text>
+
+  <!-- 拦截点说明 -->
+  <rect x="80" y="556" width="1120" height="52" rx="26" fill="#1b2437" stroke="#2f4a6d" stroke-width="2" stroke-dasharray="5 6" />
+  <text x="640" y="588" text-anchor="middle" font-size="13" fill="#a9c2e6">enforcement 只决定在哪里校验（agent-created / start-activation / both），不改变上面的判定结果</text>
+
+  <!-- 左列标注：判定链 -->
+  <text x="360" y="196" text-anchor="end" font-size="12" fill="#4a5b7a">1</text>
+  <text x="360" y="296" text-anchor="end" font-size="12" fill="#4a5b7a">2</text>
+  <text x="360" y="392" text-anchor="end" font-size="12" fill="#4a5b7a">3</text>
+</svg>

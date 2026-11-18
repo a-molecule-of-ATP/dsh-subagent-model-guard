@@ -12,39 +12,9 @@ DSH's official subagent allow-list (`subagent-model-selection-settings`'s `allow
 
 ## What a dispatch passes through
 
-```
-  subagent / subagent_fork dispatch
-             |
-             v
-  +---------------------------+
-  | 1. Is the route known?     |
-  |    provider/model missing?|
-  +------------+--------------+
-       known   |   unknown
-               v            v
-   +----------------+   +---------------------------+
-   | 2. deniedRoutes|   | Allow + record (no hard   |
-   |    blacklist?  |   | refusal) — external       |
-   +-------+--------+   | acp/SDK backends never    |
-   hit    |   no hit    | fire agent/created        |
-     v        v         +---------------------------+
-   refuse   +------------------------------------+
-            | 3. Allow-list: official allowedModels |
-            |    + plugin routes, merged live and   |
-            |    de-duplicated (both empty => no    |
-            |    enforcement)                      |
-            +------------+-----------------------+
-               hit   |   no hit
-                  v       v
-               +-------------+
-               | 4. Checkpoint|
-               | agent-created|
-               | or          |
-               | start-activation (optionally both)|
-               +------+------+
-                      v
-                 allow / refuse
-```
+![What a dispatch passes through](dispatch-path.svg)
+
+The pass-through applies on two paths: an unresolvable route, and a route that passes every check. `enforcement` only chooses where the check runs.
 
 ## Allow-list vs. blacklist priority
 
