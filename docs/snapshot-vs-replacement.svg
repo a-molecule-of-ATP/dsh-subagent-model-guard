@@ -5,36 +5,36 @@
     </marker>
   </defs>
 
-  <text x="400" y="48" text-anchor="middle" font-size="17" fill="#8b93a7">official  subagent</text>
-  <text x="910" y="48" text-anchor="middle" font-size="17" fill="#8b93a7">replacement  subagent</text>
+  <text x="385" y="48" text-anchor="middle" font-size="17" fill="#8b93a7">official  subagent</text>
+  <text x="895" y="48" text-anchor="middle" font-size="17" fill="#8b93a7">replacement  subagent</text>
 
   <!-- what each tool knows about allowed models -->
-  <rect x="200" y="80" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
-  <text x="400" y="114" text-anchor="middle" font-size="16" fill="#dfe4ee">allowedModels = { A }</text>
-  <text x="400" y="136" text-anchor="middle" font-size="13" fill="#8b93a7">frozen at session start</text>
+  <rect x="185" y="80" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
+  <text x="385" y="114" text-anchor="middle" font-size="16" fill="#dfe4ee">allowedModels = { A }</text>
+  <text x="385" y="136" text-anchor="middle" font-size="13" fill="#8b93a7">frozen at session start</text>
 
-  <rect x="710" y="80" width="400" height="78" rx="14" fill="#1a1d28" stroke="#2e3546" stroke-width="2" stroke-dasharray="5 6" />
-  <text x="910" y="125" text-anchor="middle" font-size="15" fill="#6b7a99">no snapshot</text>
+  <rect x="695" y="80" width="400" height="78" rx="14" fill="#1a1d28" stroke="#2e3546" stroke-width="2" stroke-dasharray="5 6" />
+  <text x="895" y="125" text-anchor="middle" font-size="15" fill="#6b7a99">no snapshot</text>
 
   <!-- the event that exposes the difference -->
-  <rect x="200" y="206" width="910" height="54" rx="27" fill="#1b2437" stroke="#2f4a6d" stroke-width="2" />
-  <text x="655" y="240" text-anchor="middle" font-size="16" fill="#a9c2e6">model B published — not in the frozen list</text>
+  <rect x="185" y="206" width="910" height="54" rx="27" fill="#1b2437" stroke="#2f4a6d" stroke-width="2" />
+  <text x="640" y="240" text-anchor="middle" font-size="16" fill="#a9c2e6">model B published — not in the frozen list</text>
 
   <!-- the same call on both paths -->
-  <rect x="200" y="300" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
-  <text x="400" y="334" text-anchor="middle" font-size="16" fill="#dfe4ee">subagent( provider: B )</text>
-  <text x="400" y="356" text-anchor="middle" font-size="13" fill="#8b93a7">checked against the snapshot</text>
+  <rect x="185" y="300" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
+  <text x="385" y="334" text-anchor="middle" font-size="16" fill="#dfe4ee">subagent( provider: B )</text>
+  <text x="385" y="356" text-anchor="middle" font-size="13" fill="#8b93a7">checked against the snapshot</text>
 
-  <rect x="710" y="300" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
-  <text x="910" y="334" text-anchor="middle" font-size="16" fill="#dfe4ee">subagent( provider: B )</text>
-  <text x="910" y="356" text-anchor="middle" font-size="13" fill="#8b93a7">→ startActivation( B )</text>
+  <rect x="695" y="300" width="400" height="78" rx="14" fill="#1e2230" stroke="#2e3546" stroke-width="2" />
+  <text x="895" y="334" text-anchor="middle" font-size="16" fill="#dfe4ee">subagent( provider: B )</text>
+  <text x="895" y="356" text-anchor="middle" font-size="13" fill="#8b93a7">→ startActivation( B )</text>
 
-  <line x1="400" y1="378" x2="400" y2="418" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#arrow)" />
-  <line x1="910" y1="378" x2="910" y2="418" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#arrow)" />
+  <line x1="385" y1="378" x2="385" y2="418" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#arrow)" />
+  <line x1="895" y1="378" x2="895" y2="418" stroke="#6b7a99" stroke-width="2.5" marker-end="url(#arrow)" />
 
-  <rect x="280" y="424" width="240" height="54" rx="27" fill="#3a1f27" stroke="#e0556a" stroke-width="2" />
-  <text x="400" y="458" text-anchor="middle" font-size="16" fill="#f0909f">blocked</text>
+  <rect x="265" y="424" width="240" height="54" rx="27" fill="#3a1f27" stroke="#e0556a" stroke-width="2" />
+  <text x="385" y="458" text-anchor="middle" font-size="16" fill="#f0909f">blocked</text>
 
-  <rect x="790" y="424" width="240" height="54" rx="27" fill="#17301f" stroke="#4cc38a" stroke-width="2" />
-  <text x="910" y="458" text-anchor="middle" font-size="16" fill="#7fdba8">allowed</text>
+  <rect x="775" y="424" width="240" height="54" rx="27" fill="#17301f" stroke="#4cc38a" stroke-width="2" />
+  <text x="895" y="458" text-anchor="middle" font-size="16" fill="#7fdba8">allowed</text>
 </svg>
