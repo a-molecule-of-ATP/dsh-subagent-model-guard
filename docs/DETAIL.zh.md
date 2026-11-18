@@ -59,6 +59,8 @@ DSH 官方的子智能体白名单（`subagent-model-selection-settings` 的 `al
 
 ## 替身工具
 
+![同一个调用，两条路径，两种结果](snapshot-vs-replacement.svg)
+
 `replaceSubagentTool`（默认关闭）用本插件自己的 `subagent` 工具取代官方工具（一个 scoped shadow），让子智能体直接走 `startActivation`，绕开会话启动时冻结的模型快照——新上架的模型在老会话里也能立即可用。
 
 代价是它只 shadow `subagent` 这一个工具：`subagent_fork` 仍然使用官方工具，继续受同一份会话模型快照限制。替身工具在 `agent/created` 时注册到各个 agent scope，并对已存在的 agent 做一次补齐。

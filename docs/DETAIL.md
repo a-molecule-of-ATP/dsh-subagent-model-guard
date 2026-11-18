@@ -60,6 +60,8 @@ Both gates are always registered and behave according to live `enforcement`; the
 
 ## The replacement tool
 
+![One call, two paths, two outcomes](snapshot-vs-replacement.svg)
+
 `replaceSubagentTool` (default off) replaces the official `subagent` tool with this plugin's own (a scoped shadow), letting subagents go straight to `startActivation` and bypass the snapshot frozen at session start — newly published models become usable immediately even in old sessions.
 
 The cost is that it shadows only `subagent`: `subagent_fork` keeps the official tool and stays bound by the same session model snapshot. The replacement is registered into each agent scope at `agent/created`, with a catch-up pass for agents that already exist.
