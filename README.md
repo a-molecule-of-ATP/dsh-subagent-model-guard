@@ -73,7 +73,7 @@
 
 ## License
 
-MIT © 2026 dafeiyu。详见 [LICENSE](LICENSE)。
+MIT © 2026 a-molecule-of-ATP。详见 [LICENSE](LICENSE)。
 
 ---
 

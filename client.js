@@ -215,6 +215,7 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = useState(null);
       const [baseline, setBaseline] = useState(null);
       const [status, setStatus] = useState({ kind: 'idle', error: null });
+      const [selfcheck, setSelfcheck] = useState({ kind: 'idle', data: null, error: null });
       // `snapshot.status`: 'loading' | 'ready' | 'unavailable'. `unavailable`
       // means the Host does not expose this namespace to this client at all.
       const [sync, setSync] = useState('loading');
@@ -271,6 +272,19 @@ window.__ModuleLoader__.load({
 
       const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
       const update = (patch) => setDraft({ ...draft, ...patch });
+      // The page cannot call a tool, so it asks the read-only route the plugin
+      // registers; that route runs the very same check as guard_selfcheck.
+      const runSelfcheck = async () => {
+        setSelfcheck({ kind: 'loading', data: null, error: null });
+        try {
+          const response = await fetch('/plugin/subagent-model-guard/selfcheck', { credentials: 'same-origin' });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data?.error ?? `HTTP ${response.status}`);
+          setSelfcheck({ kind: 'done', data, error: null });
+        } catch (error) {
+          setSelfcheck({ kind: 'error', data: null, error: String(error?.message ?? error) });
+        }
+      };
 
       if (view === 'summary') {
         return h('span', { style: { fontSize: 12.5, color: C.dim } },
@@ -455,6 +469,42 @@ window.__ModuleLoader__.load({
                 style: { ...inputBase, width: 110, flexShrink: 0 },
               }),
             ]),
+          ]),
+        ]),
+
+        h('section', { key: 'selfcheck', style: card }, [
+          h('p', { key: 't', style: cardTitle }, '自检'),
+          h('p', { key: 'd', style: cardDesc },
+            '跑一次只读检查，回答「守卫到底生效没、为什么某个路由被拒」。它不修改任何设置，'
+            + '也不影响正在进行的派发。'),
+          h('div', { key: 'box', style: { ...rowsBox, padding: '14px 16px' } }, [
+            h('button', {
+              key: 'run',
+              type: 'button',
+              disabled: selfcheck.kind === 'loading',
+              onClick: runSelfcheck,
+              style: {
+                padding: '7px 14px', fontSize: 12.5, lineHeight: 1.2, borderRadius: 8,
+                border: `1px solid ${C.border}`, background: 'transparent',
+                color: C.text, cursor: selfcheck.kind === 'loading' ? 'default' : 'pointer',
+                fontFamily: 'inherit',
+              },
+            }, selfcheck.kind === 'loading' ? '检查中…' : '运行自检'),
+            selfcheck.kind === 'error'
+              ? h('p', { key: 'e', style: { margin: '10px 0 0', fontSize: 12.5, color: C.error } },
+                `自检失败：${selfcheck.error}`)
+              : null,
+            selfcheck.kind === 'done'
+              ? h('pre', {
+                key: 'out',
+                style: {
+                  margin: '10px 0 0', padding: '10px 12px', borderRadius: 8,
+                  border: `1px solid ${C.border}`, background: 'rgba(127,127,127,0.06)',
+                  fontSize: 11.5, lineHeight: 1.5, maxHeight: 260, overflow: 'auto',
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                },
+              }, JSON.stringify(selfcheck.data, null, 2))
+              : null,
           ]),
         ]),
 

@@ -566,8 +566,13 @@ export function apply(ctx, config) {
         }, '当前 enforcement 模式下哪几道闸门处于启用状态')
           ?? { agentCreated: false, startActivation: false };
         const replacement = probe('replacement', () => ({
-          installed: replacementRegistered > 0,
-          note: `替换工具已在 ${replacementRegistered} 个 agent scope 注册；开关 replaceSubagentTool=${replaceTool()}`,
+          // A monotonic counter cannot answer "is it installed now": turning the
+          // switch off leaves the count above zero while nothing is shadowed.
+          // Gate it on the live switch so the report stops claiming an install
+          // that no longer exists.
+          installed: replacementRegistered > 0 && replaceTool(),
+          note: `本次激活以来已为 ${replacementRegistered} 个 agent scope 注册过替换工具；`
+            + `开关 replaceSubagentTool=${replaceTool()}`,
         }), '替换工具让子智能体直接走 startActivation，绕开会话模型快照')
           ?? { installed: false, note: '无法读取替换工具状态' };
         const recentDenials = probe('recentDenials',
@@ -611,6 +616,44 @@ export function apply(ctx, config) {
     ctx.tools?.register?.(selfcheckDefinition());
   } catch (error) {
     warn('注册 guard_selfcheck 只读自检工具失败', error);
+  }
+
+  /**
+   * Let the settings page run the same self-check the tool exposes.
+   *
+   * The page has no way to call a tool, so it asks this route instead; the route
+   * calls the very same `execute`, so the button and the tool can never disagree.
+   * It only reads, and registers nothing when the host has no web server.
+   */
+  let webServer;
+  try {
+    webServer = ctx.get?.('webServer');
+  } catch {
+    // A host without a web server (or a `get` that throws) simply gets no route.
+  }
+  if (webServer) {
+    try {
+      ctx.effect(() => webServer.register({
+        kind: 'exact',
+        path: '/plugin/subagent-model-guard/selfcheck',
+        resource: async () => {
+          let payload;
+          let status = 200;
+          try {
+            payload = await selfcheckDefinition().execute();
+          } catch (error) {
+            status = 500;
+            payload = { error: error instanceof Error ? error.message : String(error) };
+          }
+          return new Response(JSON.stringify(payload), {
+            status,
+            headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+          });
+        },
+      }), 'subagent-model-guard:selfcheck-route');
+    } catch (error) {
+      warn('注册自检只读路由失败（设置页的自检按钮将不可用）', error);
+    }
   }
 
   // ── Gate A: agent/created ──────────────────────────────────────────────
