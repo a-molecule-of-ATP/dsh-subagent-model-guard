@@ -1,0 +1,11 @@
+# Keep line endings identical on every platform; these files are read by git
+# tooling and by editors on Windows and POSIX alike.
+* text=auto eol=lf
+
+# Windows tooling (bz.exe / ghd) writes CRLF; do not fight it there.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.svg text
+*.png binary
+*.zip binary
