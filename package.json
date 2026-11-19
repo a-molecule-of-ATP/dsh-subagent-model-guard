@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-subagent-model-guard",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "DeepSeek Harness plugin that gates subagent delegation by provider/model allow-list, including the silent parent-route fallback, with optional official-tool replacement.",
