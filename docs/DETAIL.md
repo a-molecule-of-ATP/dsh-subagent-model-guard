@@ -73,6 +73,8 @@ The list lives in **DSH's own subagent model selection settings**; this plugin p
 
 `guard_selfcheck` is a read-only diagnostic tool with no parameters that changes nothing. It reports whether the guard is active (`active`), the strict flag and `enforcement` mode, what the official allow-list returned, the effective route count, the state of both gates and the replacement tool, the recent denial count, and a per-item `checks` array. **The settings page now ends with a 自检 card whose "运行自检" button hits the same read-only route and runs the same check**, so the button and the tool can never report differently; the route is not registered when the host has no web server, in which case the button reports that it cannot fetch the data.
 
+**The 最近拒绝 table** below it lists each refusal: time, kind, parent route → child route, and the reason — it answers "why was that dispatch refused". It reads the in-memory denial log, capped by the 「保留最近拒绝数」 setting; when that is 0 the table says so instead of pretending everything is fine.
+
 Its `officialAllowList` distinguishes three states to help answer "why was this route allowed/refused":
 
 1. **Service unavailable**: `available:false` with an `error` (`subagentModelSelection` not mounted or missing `current()`);

@@ -651,8 +651,42 @@ export function apply(ctx, config) {
           });
         },
       }), 'subagent-model-guard:selfcheck-route');
+      // The denial log carries the one thing the tool never exposed: WHY a
+      // dispatch was refused, with the parent and child routes. Reading it is
+      // harmless, so the settings page can show it as a table.
+      ctx.effect(() => webServer.register({
+        kind: 'exact',
+        path: '/plugin/subagent-model-guard/denials',
+        resource: async () => {
+          const limit = recentDenialLimit();
+          let entries = [];
+          try {
+            entries = denialLog.snapshot(limit);
+          } catch {
+            entries = [];
+          }
+          const payload = {
+            limit,
+            recording: limit > 0,
+            entries: entries.map((entry) => ({
+              at: entry.at,
+              kind: entry.kind,
+              parentRoute: entry.parentRoute ?? null,
+              childRoute: entry.childRoute ?? null,
+              reason: entry.reason,
+            })),
+            ...(limit > 0
+              ? {}
+              : { note: 'recentDenialLimit=0，没有记录拒绝。把设置里的「保留最近拒绝数」调大就会开始记录。' }),
+          };
+          return new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+          });
+        },
+      }), 'subagent-model-guard:denials-route');
     } catch (error) {
-      warn('注册自检只读路由失败（设置页的自检按钮将不可用）', error);
+      warn('注册只读路由失败（设置页的自检/拒绝面板将不可用）', error);
     }
   }
 

@@ -216,6 +216,7 @@ window.__ModuleLoader__.load({
       const [baseline, setBaseline] = useState(null);
       const [status, setStatus] = useState({ kind: 'idle', error: null });
       const [selfcheck, setSelfcheck] = useState({ kind: 'idle', data: null, error: null });
+      const [denials, setDenials] = useState({ kind: 'idle', entries: [], limit: 0, note: '', error: null });
       // `snapshot.status`: 'loading' | 'ready' | 'unavailable'. `unavailable`
       // means the Host does not expose this namespace to this client at all.
       const [sync, setSync] = useState('loading');
@@ -272,8 +273,25 @@ window.__ModuleLoader__.load({
 
       const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
       const update = (patch) => setDraft({ ...draft, ...patch });
+      useEffect(() => { loadDenials(); }, []);
       // The page cannot call a tool, so it asks the read-only route the plugin
       // registers; that route runs the very same check as guard_selfcheck.
+      const loadDenials = async () => {
+        try {
+          const response = await fetch('/plugin/subagent-model-guard/denials', { credentials: 'same-origin' });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data?.error ?? `HTTP ${response.status}`);
+          setDenials({
+            kind: 'done',
+            entries: Array.isArray(data?.entries) ? data.entries : [],
+            limit: Number(data?.limit) || 0,
+            note: typeof data?.note === 'string' ? data.note : '',
+            error: null,
+          });
+        } catch (error) {
+          setDenials({ kind: 'error', entries: [], limit: 0, note: '', error: String(error?.message ?? error) });
+        }
+      };
       const runSelfcheck = async () => {
         setSelfcheck({ kind: 'loading', data: null, error: null });
         try {
@@ -504,6 +522,71 @@ window.__ModuleLoader__.load({
                   whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                 },
               }, JSON.stringify(selfcheck.data, null, 2))
+              : null,
+          ]),
+        ]),
+
+        h('section', { key: 'denials', style: card }, [
+          h('p', { key: 't', style: cardTitle }, '最近拒绝'),
+          h('p', { key: 'd', style: cardDesc },
+            '这张表回答「刚才那次派发为什么被拒」。记录只存在宿主进程内存里，'
+            + '绝不落盘（原因里含模型名）；条数由设置里的「保留最近拒绝数」控制。'),
+          h('div', { key: 'box', style: { ...rowsBox, padding: '14px 16px' } }, [
+            h('div', { key: 'head', style: { display: 'flex', alignItems: 'center', gap: 10 } }, [
+              h('button', {
+                key: 'reload',
+                type: 'button',
+                onClick: loadDenials,
+                style: {
+                  padding: '7px 14px', fontSize: 12.5, lineHeight: 1.2, borderRadius: 8,
+                  border: `1px solid ${C.border}`, background: 'transparent',
+                  color: C.text, cursor: 'pointer', fontFamily: 'inherit',
+                },
+              }, '刷新'),
+              h('span', { key: 'meta', style: { fontSize: 12, color: C.dim } },
+                denials.kind === 'done'
+                  ? (denials.limit > 0
+                    ? `最多保留 ${denials.limit} 条 · 当前 ${denials.entries.length} 条`
+                    : '未记录（保留数为 0）')
+                  : ''),
+            ]),
+            denials.kind === 'error'
+              ? h('p', { key: 'e', style: { margin: '10px 0 0', fontSize: 12.5, color: C.error } },
+                `读取失败：${denials.error}`)
+              : null,
+            denials.kind === 'done' && denials.note !== ''
+              ? h('p', { key: 'n', style: { margin: '10px 0 0', fontSize: 12.5, color: C.dim } }, denials.note)
+              : null,
+            denials.kind === 'done' && denials.entries.length === 0 && denials.note === ''
+              ? h('p', { key: 'empty', style: { margin: '10px 0 0', fontSize: 12.5, color: C.dim } },
+                '还没有拒绝记录。守卫此刻没有拦截过任何派发。')
+              : null,
+            denials.kind === 'done' && denials.entries.length > 0
+              ? h('div', { key: 'table', style: { marginTop: 10, overflowX: 'auto' } },
+                h('table', {
+                  style: { width: '100%', borderCollapse: 'collapse', fontSize: 12, color: C.text },
+                }, [
+                  h('thead', { key: 'h' }, h('tr', null,
+                    ['时间', '类型', '父路由 → 子路由', '原因'].map((label) => h('th', {
+                      key: label,
+                      style: {
+                        textAlign: 'left', padding: '6px 8px', whiteSpace: 'nowrap',
+                        borderBottom: `1px solid ${C.border}`, color: C.dim, fontWeight: 500,
+                      },
+                    }, label)))),
+                  h('tbody', { key: 'b' }, denials.entries.slice().reverse().map((entry, index) => h('tr', {
+                    key: `${entry.at}-${index}`,
+                  }, [
+                    h('td', { key: 'at', style: { padding: '6px 8px', whiteSpace: 'nowrap', borderBottom: `1px solid ${C.border}` } },
+                      new Date(entry.at).toLocaleTimeString()),
+                    h('td', { key: 'k', style: { padding: '6px 8px', whiteSpace: 'nowrap', borderBottom: `1px solid ${C.border}`, color: entry.kind === 'denied' ? C.error : C.dim } },
+                      entry.kind ?? ''),
+                    h('td', { key: 'r', style: { padding: '6px 8px', borderBottom: `1px solid ${C.border}` } },
+                      `${entry.parentRoute ?? '—'} → ${entry.childRoute ?? '—'}`),
+                    h('td', { key: 'm', style: { padding: '6px 8px', borderBottom: `1px solid ${C.border}` } },
+                      entry.reason ?? ''),
+                  ]))),
+                ]))
               : null,
           ]),
         ]),
