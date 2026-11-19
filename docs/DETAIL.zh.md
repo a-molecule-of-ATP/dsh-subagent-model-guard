@@ -1,6 +1,6 @@
 # 子智能体路由守卫
 
-子智能体路由守卫在子智能体派发前校验它实际会运行的 `provider/model`，用白名单、黑名单和两个可选拦截点控制「谁能派给谁」。
+子智能体路由守卫在子智能体派发前校验它实际会运行的 `provider/model`，**放行依据完全来自 DSH 官方的子智能体白名单**，另配两个可选拦截点决定在哪里校验。
 
 > **术语说明（请先读）**
 > - **参数**：智能体每次派发子智能体时传入的值，只对本次派发生效，例如 `provider`、`cwd`。
@@ -14,13 +14,17 @@ DSH 官方的子智能体白名单（`subagent-model-selection-settings` 的 `al
 
 ![一次派发要过哪几道关](dispatch-path.zh.svg)
 
-图里的「放行 + 记录」出现在两处：路由无法判定时，以及全部校验通过时。`enforcement` 只决定在哪里校验，不改变判定结果。
+两条右侧出路要有区别：路由无法判定时是「放行 + 记录」（日志里留痕），命中官方名单时是直接放行。官方名单为空或服务不可用时守卫整体不生效，此时连判定都不发生。`enforcement` 只决定在哪里校验，不改变判定结果。
 
-## 白名单与黑名单的优先级
+## 放行依据：只有官方白名单
 
-放行名单来自两个来源：`useOfficialAllowList`（默认开启）读取的官方 `allowedModels`，加上本插件自己的 `routes`，两者实时合并、去重。只有两者都为空时才不拦截。
+本插件**不维护自己的名单**。每次派发时它实时读取 DSH 设置里「子智能体模型选择」的 `allowedModels`（经 `subagentModelSelection.current()`），在那里增删模型，这里立即跟随，无需重载。
 
-`deniedRoutes` 是显式黑名单，优先级高于一切白名单（包括官方 `allowedModels`）：命中这里的组合一律拒绝，即使它同时出现在白名单里。原因是「显式拒绝」代表一个刻意的「不」——当你特意把某条路由列为拒绝时，它出现在任何放行名单里都只是遗漏，不应该反过来把拒绝给覆盖掉。
+因此「谁能派给谁」只有一个地方说了算：
+
+- **官方列表非空** → 只有列表里的组合能派发，其余拒绝。
+- **官方列表为空、官方 `enabled` 关闭、或服务不可用** → 不施加任何限制（与 DSH 原生行为一致）。守卫不会凭空发明一个你没配过的策略。
+- **想封禁某个模型** → 去官方设置里把它从白名单删掉。本插件没有黑名单，也不提供通配符。
 
 ## 两个拦截点怎么选
 
@@ -42,42 +46,34 @@ DSH 官方的子智能体白名单（`subagent-model-selection-settings` 的 `al
 
 ## 典型用法
 
-**只允许某一个模型**（并保留官方名单）：
+名单在 **DSH 官方的「子智能体模型选择」设置里**配，本插件页不提供这一项。官方列表是精确匹配，没有通配符：
+写 `"model": "*"` 只会命中一个名字真的叫 `*` 的模型。
+
+**只允许某几个模型** —— 在官方设置里把它们列进白名单即可，本插件会自动跟随，无需在这里重复。
+
+**新模型上线后老会话立刻可用**（开启替身工具，绕开会话启动时冻结的快照）：
 ```json
 {
-  "useOfficialAllowList": true,
-  "routes": [{ "provider": "workbuddy", "model": "hy4flash-free" }]
+  "replaceSubagentTool": true
 }
 ```
 
-**否决一个具体路由**（黑名单优先，即使它在白名单里也照样拒）：
+**临时关掉守卫**（排查用；关掉后一切派发放行）：
 ```json
 {
-  "deniedRoutes": [{ "provider": "untrusted", "model": "some-model" }]
-}
-```
-
-> **没有通配。** `routes` 与 `deniedRoutes` 都是**精确匹配**（provider 与 model 逐字相同才算命中）。
-> 写 `"model": "*"` 只会拒绝一个名字真的叫 `*` 的模型。要封掉一个 provider 下的所有模型，
-> 只能把每个模型逐个列进 `deniedRoutes`；漏掉的那个不会被拦住。
-
-**新模型上线后老会话立刻可用**（开启替身工具，绕开冻结快照）：
-```json
-{
-  "replaceSubagentTool": true,
-  "routes": [{ "provider": "workbuddy", "model": "brand-new-model" }]
+  "strict": false
 }
 ```
 
 ## 自查
 
-`guard_selfcheck` 是一个只读诊断工具，无参数、不改变任何状态。它返回：守卫是否生效（`active`）、严格模式与 `enforcement` 模式、官方与本插件的白名单、`deniedRoutes` 黑名单、生效路由数、两道闸门与替身工具的安装情况、最近拒绝计数，以及逐项的 `checks`。
+`guard_selfcheck` 是一个只读诊断工具，无参数、不改变任何状态。它返回：守卫是否生效（`active`）、严格模式与 `enforcement` 模式、官方白名单的读取结果、生效路由数、两道闸门与替身工具的安装情况、最近拒绝计数，以及逐项的 `checks`。
 
 其中 `officialAllowList` 能区分三种状态，方便排查「为什么这个路由被放行/拒绝」：
 
 1. **服务不可用**：`available:false`，并带 `error`（`subagentModelSelection` 未挂载或缺少 `current()`）；
-2. **官方 `enabled:false`**：`available:true, enabled:false`，`routes` 为空，**没有** `error`（这是正常状态，官方名单不施加限制）；
-3. **官方 enabled 但列表为空**（`current()` 抛错）：`available:true`，`error` 有值，`routes` 为空。
+2. **官方 `enabled:false`**：`available:true, enabled:false`，名单为空，**没有** `error`（这是正常状态，官方名单不施加限制）；
+3. **官方 enabled 但列表为空**（`current()` 抛错）：`available:true`，`error` 有值，名单为空。
 
 当新模型用不了、某个路由意外被放行、或想确认守卫是否真的生效时，用它看一眼最省事。
 

@@ -208,47 +208,6 @@ window.__ModuleLoader__.load({
       ]);
     }
 
-    const EMPTY_ROUTE = { provider: '', model: '', note: '' };
-
-    /** One allow-list row. Three inputs plus an always-reachable remove control. */
-    function RouteRow(props) {
-      const route = props.route;
-      const input = (key, placeholder) => h('input', {
-        key,
-        ...inputBase,
-        value: route[key] ?? '',
-        placeholder,
-        onChange: (event) => props.onChange({ ...route, [key]: event.target.value }),
-        onFocus: (event) => { event.currentTarget.style.borderColor = C.brand; },
-        onBlur: (event) => { event.currentTarget.style.borderColor = C.border; },
-        style: { ...inputBase, flex: '1 1 0', minWidth: 0 },
-      });
-      return h('div', {
-        style: {
-          display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px',
-          borderTop: props.first ? 'none' : `1px solid ${C.border}`,
-        },
-      }, [
-        h('div', { key: 'p', style: { flex: '0 1 32%', minWidth: 0 } }, input('provider', 'provider')),
-        h('div', { key: 'm', style: { flex: '1 1 48%', minWidth: 0 } }, input('model', 'model')),
-        h('div', { key: 'n', style: { flex: '0 1 20%', minWidth: 0 } }, input('note', '备注（可选）')),
-        h('button', {
-          key: 'rm',
-          type: 'button',
-          title: '移除这条路由',
-          'aria-label': '移除这条路由',
-          ...press({
-            onClick: props.onRemove,
-            style: {
-              flexShrink: 0, width: 30, height: 30, padding: 0, borderRadius: 8,
-              border: `1px solid ${C.border}`, background: 'transparent',
-              color: C.dim, fontSize: 16, lineHeight: 1, cursor: 'pointer',
-              transition: `transform 140ms ${EASE_OUT}`, fontFamily: 'inherit',
-            },
-          }),
-        }, '×'),
-      ]);
-    }
 
     function Page(props) {
       const form = props.ownerForm;
@@ -310,14 +269,12 @@ window.__ModuleLoader__.load({
           status.kind === 'error' ? `读取配置失败：${status.error}` : '读取配置中…');
       }
 
-      const routes = Array.isArray(draft.routes) ? draft.routes : [];
-      const denied = Array.isArray(draft.deniedRoutes) ? draft.deniedRoutes : [];
       const dirty = JSON.stringify(draft) !== JSON.stringify(baseline);
       const update = (patch) => setDraft({ ...draft, ...patch });
 
       if (view === 'summary') {
         return h('span', { style: { fontSize: 12.5, color: C.dim } },
-          `${routes.length} 条路由 · ${draft.replaceSubagentTool === true ? '替身模式' : '官方工具'}`);
+          `${draft.strict !== false ? '守卫已启用' : '守卫已关闭'} · 官方名单 · ${draft.replaceSubagentTool === true ? '替身模式' : '官方工具'}`);
       }
 
       /**
@@ -390,86 +347,17 @@ window.__ModuleLoader__.load({
             })),
         ]),
 
-        // ── allow-list ────────────────────────────────────────────────
+        // ── the official list, which is now the only policy ───────────
         h('section', { key: 'official', style: card }, [
-          h('p', { key: 't', style: cardTitle }, '官方白名单'),
+          h('p', { key: 't', style: cardTitle }, '放行依据：DSH 官方白名单'),
           h('p', { key: 'd', style: cardDesc },
-            'DSH 原生子智能体白名单（subagent-model-selection-settings）里的路由会自动并入生效名单，'
-            + '无需在这里重复维护。'),
+            '本插件不再维护自己的名单。每次派发都实时读取 DSH 设置里「子智能体模型选择」的 allowedModels，'
+            + '在那里改了模型，这里立即跟随，无需重载。'),
           h('div', { key: 'box', style: rowsBox },
-            h(SwitchRow, {
-              first: true,
-              label: '采用官方白名单',
-              hint: '每次派发时实时读取官方列表；在 DSH 设置里改了模型，这里立即跟随。',
-              value: draft.useOfficialAllowList !== false,
-              onChange: (value) => update({ useOfficialAllowList: value }),
-            })),
-        ]),
-
-        // ── extra allow-list ──────────────────────────────────────────
-        h('section', { key: 'routes', style: card }, [
-          h('p', { key: 't', style: cardTitle }, '额外允许的路由'),
-          h('p', { key: 'd', style: cardDesc },
-            '在官方白名单之外补充放行的组合。两份名单都为空时不拦截任何路由。'),
-          h('div', { key: 'box', style: rowsBox },
-            routes.length === 0
-              ? h('p', {
-                key: 'empty',
-                style: { margin: 0, padding: '16px', fontSize: 12.5, lineHeight: 1.55, color: C.dim },
-              }, '还没有路由。添加第一条后，只有这里列出的组合才会被放行。')
-              : routes.map((route, index) => h(RouteRow, {
-                key: `r${index}`,
-                first: index === 0,
-                route,
-                onChange: (next) => update({ routes: routes.map((r, i) => (i === index ? next : r)) }),
-                onRemove: () => update({ routes: routes.filter((_, i) => i !== index) }),
-              }))),
-          h('button', {
-            key: 'add',
-            type: 'button',
-            ...press({
-              onClick: () => update({ routes: [...routes, { ...EMPTY_ROUTE }] }),
-              style: {
-                marginTop: 10, padding: '7px 14px', fontSize: 12.5, lineHeight: 1.2,
-                borderRadius: 8, border: `1px dashed ${C.border}`, background: 'transparent',
-                color: C.dim, cursor: 'pointer',
-                transition: `transform 140ms ${EASE_OUT}`, fontFamily: 'inherit',
-              },
-            }),
-          }, '+ 添加路由'),
-        ]),
-
-        // ── blacklist ─────────────────────────────────────────────────
-        h('section', { key: 'denied', style: card }, [
-          h('p', { key: 't', style: cardTitle }, '拒绝的路由'),
-          h('p', { key: 'd', style: cardDesc },
-            '黑名单优先于所有白名单（含官方列表）：即使某个组合被官方白名单允许，出现在这里也会被拒绝。'),
-          h('div', { key: 'box', style: rowsBox },
-            denied.length === 0
-              ? h('p', {
-                key: 'empty',
-                style: { margin: 0, padding: '16px', fontSize: 12.5, lineHeight: 1.55, color: C.dim },
-              }, '还没有拒绝项。这里留空表示不额外否决任何组合。')
-              : denied.map((route, index) => h(RouteRow, {
-                key: `d${index}`,
-                first: index === 0,
-                route,
-                onChange: (next) => update({ deniedRoutes: denied.map((r, i) => (i === index ? next : r)) }),
-                onRemove: () => update({ deniedRoutes: denied.filter((_, i) => i !== index) }),
-              }))),
-          h('button', {
-            key: 'add',
-            type: 'button',
-            ...press({
-              onClick: () => update({ deniedRoutes: [...denied, { ...EMPTY_ROUTE }] }),
-              style: {
-                marginTop: 10, padding: '7px 14px', fontSize: 12.5, lineHeight: 1.2,
-                borderRadius: 8, border: `1px dashed ${C.border}`, background: 'transparent',
-                color: C.dim, cursor: 'pointer',
-                transition: `transform 140ms ${EASE_OUT}`, fontFamily: 'inherit',
-              },
-            }),
-          }, '+ 添加拒绝项'),
+            h('p', {
+              key: 'note',
+              style: { margin: 0, padding: '16px', fontSize: 12.5, lineHeight: 1.55, color: C.dim },
+            }, '要增删可派发的模型，请到 DSH 官方设置里改白名单；官方列表为空时本守卫不拦截任何路由。')),
         ]),
 
         // ── enforcement ───────────────────────────────────────────────
@@ -511,46 +399,12 @@ window.__ModuleLoader__.load({
               onChange: (value) => update({ auditEveryStep: value }),
             }),
             h(SwitchRow, {
-              key: 'inherit',
-              label: '检查继承路径',
-              hint: '省略模型、回退父级时也做校验。关闭后只检查显式指定的路由。',
-              value: draft.checkInherited !== false,
-              onChange: (value) => update({ checkInherited: value }),
-            }),
-            h(SwitchRow, {
               key: 'listInError',
               label: '拒绝时列出可用名单',
               hint: '关闭后错误信息只说明被拒，不附带当前白名单。名单长时会淹没错误，也避免把它写进对话记录。',
               value: draft.includeAllowedListInError !== false,
               onChange: (value) => update({ includeAllowedListInError: value }),
             }),
-            // ── numeric policy rows ───────────────────────────────────
-            h('div', {
-              key: 'depth',
-              style: {
-                ...rowBase, padding: '14px 16px',
-                borderTop: `1px solid ${C.border}`,
-                display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 18,
-              },
-            }, [
-              h('div', { key: 'c', style: { minWidth: 0 } }, [
-                h('p', { key: 't', style: rowTitle }, '最大递归深度'),
-                h('p', { key: 'd', style: rowDesc },
-                  '留空表示不限。设为 1 可以禁止子智能体再派子智能体，避免无限套娃。'),
-              ]),
-              h('input', {
-                key: 'i',
-                ...inputBase,
-                type: 'number', min: 1, step: 1,
-                value: draft.maxDepth ?? '',
-                placeholder: '不限',
-                onChange: (event) => {
-                  const raw = event.target.value.trim();
-                  update({ maxDepth: raw === '' ? null : Number(raw) });
-                },
-                style: { ...inputBase, width: 110, flexShrink: 0 },
-              }),
-            ]),
             h('div', {
               key: 'dedupe',
               style: {
@@ -611,14 +465,6 @@ window.__ModuleLoader__.load({
           // Blank provider/model rows are dropped BEFORE the write, so an
           // unfinished row cannot fail Host validation for the whole save.
           onSave: () => {
-            const cleaned = routes.filter((r) => r && r.provider && r.model);
-            const cleanedDenied = denied.filter((r) => r && r.provider && r.model);
-            if (cleaned.length !== routes.length || cleanedDenied.length !== denied.length) {
-              const cleanedDraft = { ...draft, routes: cleaned, deniedRoutes: cleanedDenied };
-              setDraft(cleanedDraft);
-              commitDraft(cleanedDraft);
-              return;
-            }
             commitDraft(draft);
           },
           onReset: () => {

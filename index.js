@@ -59,29 +59,6 @@ export const Config = Schema.object({
   strict: Schema.boolean().default(true).volatile()
     .description('关闭后整段守卫失效，所有路由一律放行。'),
 
-  useOfficialAllowList: Schema.boolean().default(true).volatile()
-    .description(
-      '直接采用 DSH 官方的子智能体白名单（subagent-model-selection-settings 的 allowedModels）作为放行依据，'
-      + '不必在这里重复维护一份。开启后下方 routes 只作为额外补充。',
-    ),
-
-  routes: Schema.array(Schema.object({
-    provider: Schema.string().required(),
-    model: Schema.string().required(),
-    note: Schema.string(),
-  })).default([]).volatile()
-    .description('额外的允许路由（在官方白名单之外补充）。两者都为空表示不拦截。'),
-
-  deniedRoutes: Schema.array(Schema.object({
-    provider: Schema.string().required(),
-    model: Schema.string().required(),
-    note: Schema.string(),
-  })).default([]).volatile()
-    .description(
-      '显式拒绝的路由，优先级高于一切白名单（含官方 allowedModels）。'
-      + '命中这里的组合一律拒绝，即使它同时出现在白名单里。',
-    ),
-
   includeAllowedListInError: Schema.boolean().default(true).volatile()
     .description(
       '拒绝时是否在错误信息里列出当前生效的名单。'
@@ -117,23 +94,11 @@ export const Config = Schema.object({
       + '关闭则保留官方工具（受快照限制）。',
     ),
 
-  maxDepth: Schema.union([
-    Schema.natural().min(1),
-    Schema.const(null),
-  ]).default(null).volatile()
-    .description(
-      '替换工具派发子智能体时使用的最大递归深度。留空（null）表示沿用 DSH 的部署默认；'
-      + '填 1 表示子智能体不能再派子智能体。',
-    ),
-
-  checkInherited: Schema.boolean().default(true).volatile()
-    .description('是否检查「省略模型、回退父级」的继承路径。'),
-
   auditEveryStep: Schema.boolean().default(false).volatile()
-    .description('在每一步模型调用时检查路由是否在白名单内，只记录不拦截。'
+    .description('在每一步模型调用时检查路由是否在官方白名单内，只记录不拦截。'
       + '走到这一步说明创建阶段的校验已漏网（例如子智能体运行中被切了模型），'
       + '此时拒绝会让它"创建成功但立刻失败"，所以只写 host 日志留痕。'),
-}).description('子智能体路由守卫：白名单 + 可选的官方工具替换。');
+}).description('子智能体路由守卫：以 DSH 官方白名单为唯一放行依据，可选替换官方工具。');
 
 function routeKey(provider, model) {
   return `${provider}/${model}`;
@@ -360,14 +325,6 @@ export function apply(ctx, config) {
     const value = deref(captured[key]);
     return typeof value === 'boolean' ? value : fallback;
   };
-  const readRoutes = () => {
-    const value = deref(captured.routes);
-    return Array.isArray(value) ? value : [];
-  };
-  const readDeniedRoutes = () => {
-    const value = deref(captured.deniedRoutes);
-    return Array.isArray(value) ? value : [];
-  };
   /** A non-negative integer count, or `fallback` for anything else. */
   const count = (key, fallback) => {
     const value = deref(captured[key]);
@@ -380,21 +337,11 @@ export function apply(ctx, config) {
       : 'agent-created';
   };
   const strict = () => flag('strict', true);
-  const useOfficialAllowList = () => flag('useOfficialAllowList', true);
-  const checkInherited = () => flag('checkInherited', true);
   const replaceTool = () => flag('replaceSubagentTool', false);
   const auditEveryStep = () => flag('auditEveryStep', false);
   const includeAllowList = () => flag('includeAllowedListInError', true);
   const recentDenialLimit = () => count('recentDenialLimit', 0);
   const auditDedupeMs = () => count('auditDedupeMs', 0);
-  /**
-   * The configured delegation depth, or `undefined` to keep DSH's deployment
-   * default. `null` is the documented "not set" value and must NOT become 0.
-   */
-  const configuredMaxDepth = () => {
-    const value = deref(captured.maxDepth);
-    return Number.isSafeInteger(value) && value >= 1 ? value : undefined;
-  };
 
   /** Route diagnostics go through `ctx.logger`, not `console`. */
   const warn = (context, error) => {
@@ -420,77 +367,49 @@ export function apply(ctx, config) {
    * Deliberately evaluated on EVERY call so an official edit, a settings write,
    * or a routes change is honoured without a reload.
    */
-  const ownRules = () => readRoutes().filter((route) => route && typeof route.provider === 'string'
-    && typeof route.model === 'string' && route.provider !== '' && route.model !== '');
-  const effectiveRules = () => {
-    const merged = [];
-    const seen = new Set();
-    const official = useOfficialAllowList() ? officialRoutes(ctx, warnOnce) : [];
-    for (const route of [...official, ...ownRules()]) {
-      const key = routeKey(route.provider, route.model);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      merged.push(route);
-    }
-    return merged;
-  };
-  const keysOf = () => new Set(effectiveRules().map((route) => routeKey(route.provider, route.model)));
-  /** The explicit denials, which outrank every allow-list. */
-  const deniedKeys = () => new Set(readDeniedRoutes()
-    .filter((route) => route && typeof route.provider === 'string' && typeof route.model === 'string')
-    .map((route) => routeKey(route.provider, route.model)));
+  /**
+   * The official allow-list, recomputed on every call so an edit in the DSH
+   * settings takes effect without a reload. This plugin deliberately keeps no
+   * list of its own: the official `allowedModels` is the single source of truth.
+   */
+  const officialRules = () => officialRoutes(ctx, warnOnce);
+  const officialKeys = () => new Set(officialRules().map((route) => routeKey(route.provider, route.model)));
 
   /**
-   * Decide one route.
+   * Decide one route against the official list.
    *
-   * `denied` wins over `allowed`: an explicit denial is a deliberate "no", so a
-   * route that also appears in the official list or in `routes` stays refused.
-   *
-   * When NO allow-list exists at all but denials do, the policy is "everything
-   * except these", not "nothing is allowed" — otherwise a deny-only setup would
-   * silently block every delegation and the blacklist would be unusable alone.
+   * An empty or unavailable official list means "no restriction" in DSH itself,
+   * which is why {@link active} is false then and this verdict is never used to
+   * refuse anything: the guard never invents a policy the user did not configure.
    *
    * @param route - candidate provider/model.
-   * @returns `{ outcome: 'allowed' | 'denied' | 'not-allowed' }`.
+   * @returns `{ outcome: 'allowed' | 'not-allowed' }`.
    */
   const judge = (route) => {
     const key = routeKey(route.provider, route.model);
-    if (deniedKeys().has(key)) return { outcome: 'denied' };
-    const allowed = keysOf();
-    if (allowed.has(key)) return { outcome: 'allowed' };
-    // Deny-only policy: nothing is allow-listed, so absence is not a violation.
-    if (allowed.size === 0 && deniedKeys().size > 0) return { outcome: 'allowed' };
-    return { outcome: 'not-allowed' };
+    return officialKeys().has(key) ? { outcome: 'allowed' } : { outcome: 'not-allowed' };
   };
 
-  /**
-   * Enforcement is live only while enabled with at least one allow-listed rule.
-   * A denial-only configuration still enforces: an all-denied setup is a valid
-   * "nothing may be delegated" policy, not a disabled guard.
-   */
-  const active = () => strict()
-    && (keysOf().size > 0 || deniedKeys().size > 0);
+  /** Live only while the master switch is on and the official list restricts something. */
+  const active = () => strict() && officialKeys().size > 0;
 
-  const allowedText = () => describeRoutes(effectiveRules());
+  const allowedText = () => describeRoutes(officialRules());
 
   /**
-   * The reason a route was refused, phrased by WHY it was refused.
-   * The allow-list is appended only when `includeAllowedListInError` is on: the
-   * list can name models the operator does not want echoed back.
+   * The reason a route was refused there is exactly one reason now: it is not in
+   * the official list. The list is appended only when `includeAllowedListInError`
+   * is on — it can name models the operator does not want echoed back.
    */
-  const refusalOf = (route, outcome) => {
+  const refusalOf = (route) => {
     const key = routeKey(route.provider, route.model);
     const allowList = includeAllowList() ? `（允许：${allowedText()}）` : '';
-    if (outcome === 'denied') {
-      return `${key} 被显式拒绝（在 deniedRoutes 中）${allowList}。`;
-    }
-    return `${key} 不在白名单内${allowList}。`;
+    return `${key} 不在 DSH 官方的子智能体白名单内${allowList}。`;
   };
 
   /** The one place a denial is recorded, shared by every enforcement point. */
   const denialLog = createDenialLog();
   /**
-   * @param kind - `denied` (explicitly refused) or `unknown` (route unresolvable).
+   * @param kind - `denied` (a route outside the official list) or `unknown` (route unresolvable).
    * @param parentRoute - the delegating agent's route, when known.
    * @param childRoute - the attempted child route, when known.
    * @param reason - human-readable reason.
@@ -530,8 +449,8 @@ export function apply(ctx, config) {
   // is a mirror, not a second implementation.
   const selfcheckDefinition = () => ({
     name: 'guard_selfcheck',
-    description: '只读诊断，不改任何状态：报告子智能体路由守卫的当前生效状态（严格/启用标志、enforcement 模式、官方与本插件白名单、'
-      + '显式拒绝名单、闸门与替换工具安装情况、最近拒绝计数），供排查为何某个路由被放行或拒绝。',
+    description: '只读诊断，不改任何状态：报告子智能体路由守卫的当前生效状态（严格/启用标志、enforcement 模式、'
+      + '官方白名单的读取结果、闸门与替换工具安装情况、最近拒绝计数），供排查为何某个路由被放行或拒绝。',
     parameters: {
       type: 'object',
       additionalProperties: false,
@@ -632,24 +551,12 @@ export function apply(ctx, config) {
         }
 
         // ── every other field, each independently guarded ──────────────
-        const activeValue = probe('active', () => active(), 'strict=true 且存在至少一条允许/拒绝规则时守卫才生效');
+        const activeValue = probe('active', () => active(), 'strict=true 且官方白名单非空时守卫才生效');
         const strictValue = probe('strict', () => strict(), '关闭后整段守卫失效，所有路由放行');
         const enforcementValue = probe('enforcement', () => readEnforcement(), 'agent-created | start-activation | both');
-        const ownRoutes = probe('ownRules',
-          () => ownRules().map((r) => ({ provider: r.provider, model: r.model })),
-          '本插件 routes 字段：官方白名单之外的补充');
-        const deniedRoutes = probe('deniedKeys',
-          () => [...deniedKeys()].map((key) => {
-            const slash = key.indexOf('/');
-            return { provider: key.slice(0, slash), model: key.slice(slash + 1) };
-          }),
-          '显式拒绝名单，优先级高于一切白名单');
-        const effectiveRulesValue = probe('effectiveRules', () => effectiveRules(),
-          '官方 + 本插件白名单合并去重后的完整列表');
-        const keysOfValue = probe('keysOf', () => keysOf().size, '去重后的白名单 key 数');
-        const effectiveRouteCount = effectiveRulesValue === undefined
-          ? (keysOfValue ?? 0)
-          : effectiveRulesValue.length;
+        const effectiveRulesValue = probe('officialRoutes', () => officialRules(),
+          '官方 allowedModels（本插件不再维护自己的名单）');
+        const effectiveRouteCount = effectiveRulesValue === undefined ? 0 : effectiveRulesValue.length;
         const gates = probe('gates', () => {
           const mode = readEnforcement();
           return {
@@ -672,8 +579,6 @@ export function apply(ctx, config) {
           strict: strictValue === undefined ? false : strictValue,
           enforcement: enforcementValue === undefined ? 'unknown' : enforcementValue,
           officialAllowList,
-          ownRoutes: ownRoutes ?? [],
-          deniedRoutes: deniedRoutes ?? [],
           effectiveRouteCount,
           gates,
           replacement,
@@ -689,8 +594,6 @@ export function apply(ctx, config) {
           strict: false,
           enforcement: 'unknown',
           officialAllowList: { available: false, enabled: false, routes: [], error: `自检内部错误：${detail}` },
-          ownRoutes: [],
-          deniedRoutes: [],
           effectiveRouteCount: 0,
           gates: { agentCreated: false, startActivation: false },
           replacement: { installed: false, note: '自检内部错误' },
@@ -731,8 +634,8 @@ export function apply(ctx, config) {
       }
       const { outcome } = judge(route);
       if (outcome !== 'allowed') {
-        const reason = refusalOf(route, outcome);
-        recordDenial(outcome === 'denied' ? 'denied' : 'unknown', undefined, route, reason);
+        const reason = refusalOf(route);
+        recordDenial('denied', undefined, route, reason);
         throw denial(`拒绝创建子智能体：${reason}`);
       }
     } catch (error) {
@@ -780,8 +683,8 @@ export function apply(ctx, config) {
             } else {
               const { outcome } = judge(route);
               if (outcome !== 'allowed') {
-                const reason = refusalOf(route, outcome);
-                recordDenial(outcome === 'denied' ? 'denied' : 'unknown', undefined, route, reason);
+                const reason = refusalOf(route);
+                recordDenial('denied', undefined, route, reason);
                 throw denial(reason);
               }
             }
@@ -904,8 +807,8 @@ export function apply(ctx, config) {
         if (route !== undefined && guardOn) {
           const { outcome } = judge(route);
           if (outcome !== 'allowed') {
-            const reason = refusalOf(route, outcome);
-            recordDenial(outcome === 'denied' ? 'denied' : 'unknown',
+            const reason = refusalOf(route);
+            recordDenial('denied',
               sessionRoute(parent?.session) ?? agentRoute(parent), route, reason);
             throw denial(reason);
           }
@@ -943,9 +846,9 @@ export function apply(ctx, config) {
           parent,
           ...(agentOptions !== undefined ? { agentOptions } : {}),
           ...(agentPreset !== undefined ? { agentPreset } : {}),
-          // `configuredMaxDepth()` returns undefined when unset, so `??` keeps
-          // the deployment default instead of forcing 0 (a hard block).
-          maxDepth: configuredMaxDepth() ?? subagents.resolveMaxDepth(undefined),
+          // No depth rule belongs to this plugin any more: always defer to the
+          // deployment default rather than forcing a value.
+          maxDepth: subagents.resolveMaxDepth(undefined),
           signal: exec.signal,
           delivery: 'parent',
         });
@@ -1052,9 +955,9 @@ export function apply(ctx, config) {
 
       // Deliberately NOT a rejection: by this point the child already exists,
       // so declining would surface as `stopReason: 'refusal'` with no reason.
-      const reason = `审计：${refusalOf(route, outcome)}（agent ${agentId}）`;
+      const reason = `审计：${refusalOf(route)}（agent ${agentId}）`;
       warn(reason);
-      recordDenial(outcome === 'denied' ? 'denied' : 'unknown', undefined, route, reason);
+      recordDenial('denied', undefined, route, reason);
     } catch (error) {
       warn('审计钩子内部错误', error);
     }
@@ -1077,11 +980,10 @@ export function apply(ctx, config) {
       return next();
     }
     if (route === undefined) return next();
-    if (!route.explicit && !checkInherited()) return next();
     const { outcome } = judge(route);
     if (outcome === 'allowed') return next();
-    const reason = refusalOf(route, outcome);
-    recordDenial(outcome === 'denied' ? 'denied' : 'unknown',
+    const reason = refusalOf(route);
+    recordDenial('denied',
       sessionRoute(exec?.agent?.session) ?? agentRoute(exec?.agent), route, reason);
     return {
       kind: 'deny',

@@ -14,14 +14,23 @@ DSH's official subagent allow-list (`subagent-model-selection-settings`'s `allow
 
 ![What a dispatch passes through](dispatch-path.svg)
 
-The pass-through applies on two paths: an unresolvable route, and a route that passes every check. `enforcement` only chooses where the check runs.
+The two right-hand exits differ: an unresolvable route passes through with a log entry, while a route on the official list simply passes. When the official list is empty or the service is unavailable the guard is inactive and no verdict is reached at all. `enforcement` only chooses where the check runs.
 
-## Allow-list vs. blacklist priority
+## The allow-list is the official one
 
-The allow-list has two sources: the official `allowedModels` read when `useOfficialAllowList` is on (default), plus this plugin's own `routes`. They are merged and de-duplicated live. Only when both are empty is nothing blocked.
+This plugin keeps **no list of its own**. On every dispatch it reads the DSH
+subagent model selection (`allowedModels`, via `subagentModelSelection.current()`),
+so an edit in the DSH settings takes effect immediately without a reload.
 
-`deniedRoutes` is an explicit blacklist that outranks every allow-list, including the official `allowedModels`: a matching route is refused even if it also appears on an allow-list. The reason is that an explicit denial is a deliberate "no" — if you specifically listed a route as denied, its presence on any allow-list is an oversight and must not override the denial.
+That leaves exactly one place to decide who may be delegated to:
 
+- **Non-empty official list** — only those routes may be dispatched; everything
+  else is refused.
+- **Empty list, official `enabled` off, or service unavailable** — no restriction
+  is applied, matching DSH's native behaviour. The guard never invents a policy
+  you did not configure.
+- **To block a model** — remove it from the official list. This plugin has no
+  blacklist and no wildcard.
 ## Choosing a checkpoint
 
 `enforcement` is a setting (configured on the plugin page, persisting across dispatches) that decides where to validate; it defaults to `agent-created`:
@@ -42,43 +51,33 @@ The cost is that it shadows only `subagent`: `subagent_fork` keeps the official 
 
 ## Typical usage
 
-**Allow only one model** (keeping the official list):
+The list lives in **DSH's own subagent model selection settings**; this plugin page does not offer it. Matching there is exact — there is no wildcard.
+
+**Allow only some models** — list them in the official settings; this plugin follows immediately.
+
+**Make a new model usable in old sessions immediately** (enable the replacement tool so it bypasses the snapshot frozen at session start):
 ```json
 {
-  "useOfficialAllowList": true,
-  "routes": [{ "provider": "workbuddy", "model": "hy4flash-free" }]
+  "replaceSubagentTool": true
 }
 ```
 
-**Deny one specific route** (the blacklist wins even if the same route is allow-listed):
+**Switch the guard off temporarily** (for diagnosis; everything passes):
 ```json
 {
-  "deniedRoutes": [{ "provider": "untrusted", "model": "some-model" }]
-}
-```
-
-> **There is no wildcard.** `routes` and `deniedRoutes` are matched exactly — provider
-> and model must both be identical. Writing `"model": "*"` denies one model literally
-> named `*`. To ban every model under a provider you must list each one in
-> `deniedRoutes`; anything you miss stays allowed.
-
-**Make a new model usable in old sessions immediately** (enable the replacement to bypass the frozen snapshot):
-```json
-{
-  "replaceSubagentTool": true,
-  "routes": [{ "provider": "workbuddy", "model": "brand-new-model" }]
+  "strict": false
 }
 ```
 
 ## Self-check
 
-`guard_selfcheck` is a read-only diagnostic tool with no parameters that changes nothing. It reports whether the guard is active (`active`), the strict flag and `enforcement` mode, the official and plugin allow-lists, the `deniedRoutes` blacklist, the effective route count, the state of both gates and the replacement tool, the recent denial count, and a per-item `checks` array.
+`guard_selfcheck` is a read-only diagnostic tool with no parameters that changes nothing. It reports whether the guard is active (`active`), the strict flag and `enforcement` mode, what the official allow-list returned, the effective route count, the state of both gates and the replacement tool, the recent denial count, and a per-item `checks` array.
 
 Its `officialAllowList` distinguishes three states to help answer "why was this route allowed/refused":
 
 1. **Service unavailable**: `available:false` with an `error` (`subagentModelSelection` not mounted or missing `current()`);
-2. **Official `enabled:false`**: `available:true, enabled:false`, empty `routes`, **no** `error` (a normal state — the official list imposes no restriction);
-3. **Official enabled but empty** (`current()` throws): `available:true`, `error` set, empty `routes`.
+2. **Official `enabled:false`**: `available:true, enabled:false`, an empty list, **no** `error` (a normal state — the official list imposes no restriction);
+3. **Official enabled but empty** (`current()` throws): `available:true`, `error` set, an empty list.
 
 Reach for it when a new model will not work, a route is unexpectedly allowed, or you want to confirm the guard is really in effect.
 
