@@ -20,8 +20,12 @@ const vendored = [...new Set([...source.matchAll(/from\s+'(@deepseek-ai\/[^']+)'
 for (const name of vendored) {
   const rel = `node_modules/${name}`;
   if (!existsSync(path.join(root, rel))) fail(`${name} is imported but not vendored`);
-  const listed = (pkg.files ?? []).some((entry) => entry === rel || entry.startsWith(`${rel}/`));
-  if (!listed) fail(`${name} is imported but package.json "files" omits ${rel}`);
+  // `files` can never carry node_modules: npm strips it. Only bundledDependencies
+  // puts it in the tarball, and that requires a matching dependencies entry.
+  if ((pkg.dependencies ?? {})[name] === undefined) fail(`${name} is imported but missing from dependencies`);
+  if (!(pkg.bundledDependencies ?? []).includes(name)) {
+    fail(`${name} is imported but not in bundledDependencies — npm would drop it from the tarball`);
+  }
 }
 if (vendored.length > 0) pass(`${vendored.length} vendored import(s) shipped`);
 
