@@ -35,7 +35,8 @@
     "locale/*.json",
     "docs",
     "icon.svg",
-    "node_modules/**"
+    "node_modules/@deepseek-ai/schemastery",
+    "node_modules/@deepseek-ai/cosmokit"
   ],
   "dsh": {
     "bundle": {
