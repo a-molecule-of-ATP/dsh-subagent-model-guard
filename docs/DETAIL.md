@@ -83,6 +83,24 @@ Its `officialAllowList` distinguishes three states to help answer "why was this 
 
 Reach for it when a new model will not work, a route is unexpectedly allowed, or you want to confirm the guard is really in effect.
 
+## How this differs from similar tools
+
+More than one DSH plugin manages subagent models, but they aim at different things:
+
+| Project | Mechanism | Difference |
+|---|---|---|
+| `ccsert/dsh-subagent-hub` | named presets plus a route-table guard that refuses out-of-bounds routes before dispatch; also reads the official `allowedModels` | positioned around grouping by preset; this plugin makes one verdict |
+| `643048695/dsh-subagent-role-router` | **substitutes** an out-of-list model with an allowed one, and can switch models mid-run | this plugin **refuses and explains**, never substitutes silently |
+| `CypherNaught-0x/DSH-Subagent-Model-Router` | picks the best model by capability tag | the opposite goal: it optimises, this one gates |
+| `Funny1Potato/dsh-outsourcing-expert` | a preset that forces outsourcing, after scouting available models | prompt-level guidance, not runtime enforcement |
+
+**The most concrete difference**: an optional replacement of the official `subagent` tool that goes straight to `ctx.subagents.startActivation()`, bypassing the model snapshot DSH freezes at session start. The projects above all work in the routing layer *before* that snapshot takes effect; none of them addresses "an old session has a frozen `subagent` tool schema, so a newly published model cannot be passed in at all".
+
+Two further points are design choices rather than capabilities:
+
+- **No list of its own.** The only source is the official `allowedModels`, read live on every dispatch, so an edit in the official settings takes effect immediately.
+- **Refusals are recorded.** Parent route → child route plus the reason stay in memory and are shown in a table on the settings page, which is what answers "why was that dispatch refused".
+
 ## Known limitations
 
 - External acp/SDK backends do not fire `agent/created` and expose no local provider/model; in that case the guard cannot determine the route and **allows and records** it (fail-open) rather than hard-refusing.
