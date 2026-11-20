@@ -43,6 +43,18 @@ const DELEGATION_TOOLS = ['subagent', 'subagent_fork'];
  */
 const REPLACED_TOOL = 'subagent';
 
+/**
+ * The second official global tool this plugin can shadow.
+ *
+ * `list_subagent_models` reads its route list from the model-selection policy
+ * RECORDED IN THE SESSION, not from the current settings. A session that started
+ * before a model was added therefore reports that model as unavailable, and its
+ * error ("not allowed for this Session") reads like a permissions problem when
+ * it is really a stale snapshot. The replacement answers from the official
+ * settings instead, which is exactly what the guard already treats as truth.
+ */
+const REPLACED_LIST_TOOL = 'list_subagent_models';
+
 /** Session origin that marks a subagent child (`parentSession` alone is not proof). */
 const SUBAGENT_ORIGIN = 'subagent';
 
@@ -92,6 +104,14 @@ export const Config = Schema.object({
       '用本插件实现的 subagent 取代官方工具（scoped shadow）。'
       + '开启后子智能体直接走 startActivation，绕开 DSH 的会话模型快照，新上架的模型立即可用。'
       + '关闭则保留官方工具（受快照限制）。',
+    ),
+
+  replaceListModelsTool: Schema.boolean().default(false).volatile()
+    .description(
+      '用本插件实现的 list_subagent_models 取代官方工具。'
+      + '官方那份按「会话启动时记下的模型快照」回答，会话期间新加的模型会被报成不可用；'
+      + '本插件那份按「当前官方设置」回答，与守卫的放行依据一致。'
+      + '建议与 replaceSubagentTool 同时开启，否则列出来的模型可能派发不出去。',
     ),
 
   auditEveryStep: Schema.boolean().default(false).volatile()
@@ -338,6 +358,7 @@ export function apply(ctx, config) {
   };
   const strict = () => flag('strict', true);
   const replaceTool = () => flag('replaceSubagentTool', false);
+  const replaceList = () => flag('replaceListModelsTool', false);
   const auditEveryStep = () => flag('auditEveryStep', false);
   const includeAllowList = () => flag('includeAllowedListInError', true);
   const recentDenialLimit = () => count('recentDenialLimit', 0);
@@ -450,11 +471,18 @@ export function apply(ctx, config) {
   const selfcheckDefinition = () => ({
     name: 'guard_selfcheck',
     description: '只读诊断，不改任何状态：报告子智能体路由守卫的当前生效状态（严格/启用标志、enforcement 模式、'
-      + '官方白名单的读取结果、闸门与替换工具安装情况、最近拒绝计数），供排查为何某个路由被放行或拒绝。',
+      + '官方白名单的读取结果、闸门与替换工具安装情况、最近拒绝计数），供排查为何某个路由被放行或拒绝。'
+      + '传 route（"provider/model"）时，不派发就预判该路由此刻会不会被放行、为什么。',
     parameters: {
       type: 'object',
       additionalProperties: false,
-      properties: {},
+      properties: {
+        route: {
+          type: 'string',
+          description: 'Optional "provider/model". When given, the check also reports how this exact '
+            + 'route would be judged right now — without dispatching anything.',
+        },
+      },
     },
     output: {
       // A schema object is mandatory: the registry rejects an output that only
@@ -468,14 +496,27 @@ export function apply(ctx, config) {
           enforcement: { type: 'string' },
           effectiveRouteCount: { type: 'number' },
           recentDenials: { type: 'number' },
+          routeCheck: {},
         },
       },
-      render: (_args, value) => [{
-        type: 'text',
-        text: `guard_selfcheck: active=${value?.active}, strict=${value?.strict}, enforcement=${value?.enforcement}`,
-      }],
+      render: (_args, value) => {
+        const base = `guard_selfcheck: active=${value?.active}, strict=${value?.strict}, enforcement=${value?.enforcement}`;
+        const check = value?.routeCheck;
+        if (check === undefined) return [{ type: 'text', text: base }];
+        const verdict = check.verdict === 'allowed'
+          ? '会被放行'
+          : check.verdict === 'refused'
+            ? '会被拒绝'
+            : check.verdict === 'not-enforced'
+              ? '不会被拦（守卫未生效）'
+              : '参数无效';
+        return [{
+          type: 'text',
+          text: `${base}\n${check.route} → ${verdict}${check.reason ? `：${check.reason}` : ''}`,
+        }];
+      },
     },
-    async execute() {
+    async execute(args) {
       // The outer net guarantees the tool never rejects, whatever happens.
       try {
         const checks = [];
@@ -573,11 +614,42 @@ export function apply(ctx, config) {
           installed: replacementRegistered > 0 && replaceTool(),
           note: `本次激活以来已为 ${replacementRegistered} 个 agent scope 注册过替换工具；`
             + `开关 replaceSubagentTool=${replaceTool()}`,
+          // The listing replacement is what makes discovery agree with the
+          // guard after a settings edit: the official tool answers from the
+          // snapshot recorded at session start.
+          listModels: {
+            installed: listRegistered > 0 && replaceList(),
+            note: `已为 ${listRegistered} 个 agent scope 注册过 list_subagent_models 替换；`
+              + `开关 replaceListModelsTool=${replaceList()}`,
+          },
         }), '替换工具让子智能体直接走 startActivation，绕开会话模型快照')
           ?? { installed: false, note: '无法读取替换工具状态' };
         const recentDenials = probe('recentDenials',
           () => denialLog.snapshot(recentDenialLimit()).length,
           '内存中保留的最近拒绝记录条数（recentDenialLimit=0 时不记录）');
+
+        // Answer "would this route be allowed?" without dispatching anything.
+        // The point is to turn "dispatch, get refused, read the error" into
+        // "ask once, know the answer" — the refusal used to cost a real call.
+        const routeArg = typeof args?.route === 'string' ? args.route.trim() : '';
+        const routeCheck = routeArg === '' ? undefined : probe('routeCheck', () => {
+          const slash = routeArg.indexOf('/');
+          if (slash <= 0 || slash === routeArg.length - 1) {
+            return { route: routeArg, verdict: 'invalid', reason: 'route must look like "provider/model"' };
+          }
+          const candidate = { provider: routeArg.slice(0, slash), model: routeArg.slice(slash + 1) };
+          const enforced = active();
+          if (!enforced) {
+            return {
+              route: routeArg, active: false, verdict: 'not-enforced',
+              reason: '守卫当前不生效（strict 关闭、官方白名单为空，或 subagentModelSelection 服务不可用）',
+            };
+          }
+          const { outcome } = judge(candidate);
+          return outcome === 'allowed'
+            ? { route: routeArg, active: true, verdict: 'allowed', reason: '在官方白名单内' }
+            : { route: routeArg, active: true, verdict: 'refused', reason: refusalOf(candidate) };
+        }, '传入 route 时预判该路由是否会放行（不真的派发）');
 
         return {
           active: activeValue === undefined ? false : activeValue,
@@ -588,6 +660,7 @@ export function apply(ctx, config) {
           gates,
           replacement,
           recentDenials: recentDenials ?? 0,
+          ...(routeCheck === undefined ? {} : { routeCheck }),
           checks,
         };
       } catch (error) {
@@ -785,6 +858,8 @@ export function apply(ctx, config) {
 
   /** How many agent scopes had the replacement `subagent` tool registered. */
   let replacementRegistered = 0;
+  /** How many agent scopes had the replacement `list_subagent_models` registered. */
+  let listRegistered = 0;
 
   {
     const toolDescription =
@@ -933,6 +1008,129 @@ export function apply(ctx, config) {
       },
     });
 
+    /** One model line, formatted exactly like the official tool. */
+    const modelLine = (providerId, model) => `${providerId}/${model.id} — ${model.name}`
+      + (model.description === undefined ? '' : `: ${model.description}`);
+
+    /** Resolve a provider id, or name the providers the allow-list covers. */
+    const registeredProvider = (llm, providerId, routes) => {
+      const providers = llm.listProviders();
+      const found = providers.find((candidate) => candidate.id === providerId);
+      if (found !== undefined) return found;
+      const available = providers
+        .filter((candidate) => routes.some((route) => route.provider === candidate.id))
+        .map((candidate) => candidate.id).join(', ') || '(none)';
+      throw new Error(`LLM provider "${providerId}" is not registered; available providers: ${available}`);
+    };
+
+    /**
+     * The replacement for `list_subagent_models`.
+     *
+     * The official tool answers from the model-selection policy recorded in the
+     * SESSION: a model added after the session started is reported as "not
+     * allowed for this Session", which reads like a permissions problem but is a
+     * stale snapshot. This one answers from the CURRENT official allow-list —
+     * the same list the guard enforces — so the answer matches what a dispatch
+     * through the replacement tool will actually do.
+     */
+    const modelListDefinition = () => ({
+      name: REPLACED_LIST_TOOL,
+      description: 'Inspect the routes available for explicit subagent model selection, answered from the '
+        + 'CURRENT official allow-list rather than the snapshot recorded at session start. '
+        + 'No arguments: authorized providers. `provider`: that provider\'s authorized models. '
+        + '`provider` + `model`: that model and its reasoning efforts.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          provider: { type: 'string', description: 'Registered LLM provider id.' },
+          model: { type: 'string', description: 'Exact model id; requires `provider`.' },
+        },
+      },
+      output: {
+        // The official tool returns a plain string, and so does this one.
+        schema: { type: 'string' },
+        render: (_args, result) => [{ type: 'text', text: result }],
+      },
+      isConcurrencySafe: () => true,
+      async execute(args, exec) {
+        if (exec?.agent === undefined) throw new Error('list_subagent_models requires a calling agent');
+        const llm = ctx.get('llm');
+        if (llm === undefined) {
+          throw new Error('cannot discover child LLM routes because the `llm` service is unavailable');
+        }
+        const request = args ?? {};
+        if (request.model !== undefined && request.provider === undefined) {
+          throw new Error('`model` requires `provider`');
+        }
+
+        // Routes come from the live settings. When the official list is empty or
+        // disabled the guard imposes nothing, so the parent's own route is the
+        // only truthful answer — the same fallback the official tool uses.
+        let routes = officialRules().map(({ provider, model }) => ({ provider, model }));
+        let onlyParent = false;
+        if (routes.length === 0) {
+          const parentRoute = sessionRoute(exec.agent?.session) ?? agentRoute(exec.agent);
+          if (parentRoute === undefined) {
+            throw new Error('cannot discover child LLM routes: the official allow-list is empty and the '
+              + 'parent route is unknown');
+          }
+          routes = [parentRoute];
+          onlyParent = true;
+        }
+        const note = onlyParent ? '\n（官方白名单为空，以上只有父级路由）' : '';
+
+        if (request.provider === undefined) {
+          const providers = llm.listProviders().filter((p) => routes.some((r) => r.provider === p.id));
+          return (providers.length === 0
+            ? '(no LLM providers)'
+            : providers.map((p) => `${p.id} — ${p.name}`).join('\n')) + note;
+        }
+        if (typeof request.provider !== 'string' || request.provider.length === 0) {
+          throw new Error('`provider` must be non-empty');
+        }
+        const allowedRoutes = routes.filter((route) => route.provider === request.provider);
+        if (allowedRoutes.length === 0) {
+          const known = [...new Set(routes.map((route) => route.provider))].join(', ') || '(none)';
+          throw new Error(`LLM provider "${request.provider}" 不在官方白名单内；白名单里的 provider：${known}`);
+        }
+        const provider = registeredProvider(llm, request.provider, routes);
+
+        if (request.model === undefined) {
+          const advertised = typeof llm.listModels === 'function' ? await llm.listModels(provider.id) : [];
+          let models = advertised.filter((model) => allowedRoutes.some((route) => route.model === model.id));
+          // A provider that advertises nothing still has routes the operator
+          // allowed; resolve those one by one so the answer is never "none".
+          if (models.length === 0) {
+            models = [];
+            for (const route of allowedRoutes) {
+              try {
+                models.push(await llm.resolveModelInfo(provider.id, route.model, exec.signal));
+              } catch {
+                // A route the provider cannot resolve is reported by its absence.
+              }
+            }
+          }
+          return (models.length === 0
+            ? `(no advertised models for ${provider.id})`
+            : models.map((model) => modelLine(provider.id, model)).join('\n')) + note;
+        }
+        if (typeof request.model !== 'string' || request.model.length === 0) {
+          throw new Error('`model` must be non-empty');
+        }
+        if (!allowedRoutes.some((route) => route.model === request.model)) {
+          const allow = allowedRoutes.map((route) => `${provider.id}/${route.model}`).join('、');
+          throw new Error(`child LLM route "${provider.id}/${request.model}" 不在官方白名单内（允许：${allow}）`);
+        }
+        const model = await llm.resolveModelInfo(provider.id, request.model, exec.signal);
+        const efforts = (model.reasoning?.efforts ?? []).map((effort) => `${effort.id}`
+          + `${model.reasoning?.defaultEffort === effort.id ? ' (default)' : ''} — ${effort.name}`
+          + `${effort.description === undefined ? '' : `: ${effort.description}`}`).join('\n')
+          || '(no advertised reasoning efforts)';
+        return `${modelLine(provider.id, model)}\nReasoning efforts:\n${efforts}`;
+      },
+    });
+
     /** Agents already shadowed, so a repeated `agent/created` is a no-op. */
     const shadowed = new WeakSet();
 
@@ -943,31 +1141,44 @@ export function apply(ctx, config) {
       if (shadowed.has(agent)) return;
       shadowed.add(agent);
 
-      // 1. Mask the official GLOBAL registration this plugin replaces.
+      // 1. Mask the official GLOBAL registrations this plugin replaces.
       //    `restrict()` THROWS when a name is not a known global tool in this
-      //    scope, so this is its own step with its own try: one absent tool
-      //    must never abort the rest, and must never skip step 2 — skipping it
-      //    would silently fall back to the official tool.
+      //    scope, so each name gets its own try: one absent tool must never
+      //    abort the rest, and must never skip step 2 — skipping it would
+      //    silently fall back to the official tool.
       if (typeof scoped.tools.restrict === 'function') {
-        try {
-          scoped.tools.restrict({ deny: [REPLACED_TOOL] });
-        } catch (error) {
-          warn(`屏蔽官方 ${REPLACED_TOOL} 失败（该 scope 可能没有这个全局工具）`, error);
+        for (const name of [REPLACED_TOOL, REPLACED_LIST_TOOL]) {
+          if (name === REPLACED_TOOL ? !replaceTool() : !replaceList()) continue;
+          try {
+            scoped.tools.restrict({ deny: [name] });
+          } catch (error) {
+            warn(`屏蔽官方 ${name} 失败（该 scope 可能没有这个全局工具）`, error);
+          }
         }
       }
 
       // 2. Register our own — scoped registrations shadow globals and are
-      //    exempt from the restriction above them.
-      try {
-        scoped.tools.register(replacementDefinition());
-        replacementRegistered += 1;
-      } catch (error) {
-        warn('注册替换用的 subagent 工具失败', error);
+      //    exempt from the restrictions above them.
+      if (replaceTool()) {
+        try {
+          scoped.tools.register(replacementDefinition());
+          replacementRegistered += 1;
+        } catch (error) {
+          warn('注册替换用的 subagent 工具失败', error);
+        }
+      }
+      if (replaceList()) {
+        try {
+          scoped.tools.register(modelListDefinition());
+          listRegistered += 1;
+        } catch (error) {
+          warn('注册替换用的 list_subagent_models 工具失败', error);
+        }
       }
     };
 
     ctx.on('agent/created', ({ agent }) => {
-      if (!replaceTool()) return;
+      if (!replaceTool() && !replaceList()) return;
       try {
         registerReplacement(agent);
       } catch (error) {
@@ -983,7 +1194,7 @@ export function apply(ctx, config) {
       const live = typeof agents?.list === 'function' ? agents.list() : [];
       for (const agent of live) {
         try {
-          if (!replaceTool()) break;
+          if (!replaceTool() && !replaceList()) break;
           registerReplacement(agent);
         } catch (error) {
           warn(`补齐已有 agent 的替换工具失败（${agent?.id ?? '?'}）`, error);

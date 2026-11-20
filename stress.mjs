@@ -122,7 +122,27 @@ function makeCtx({ subagentCalls = [], official = DEFAULT_OFFICIAL } = {}) {
     },
     resolveMaxDepth: () => 1,
   };
-  const services = { subagents, agentPresets: {} };
+  // The listing replacement reads providers/models from the `llm` service.
+  // A fake one keeps the tests offline while still exercising the real shape.
+  const llm = {
+    listProviders: () => [
+      { id: 'workbuddy', name: 'WorkBuddy' },
+      { id: 'unlisted', name: 'Unlisted' },
+    ],
+    listModels: async (providerId) => (providerId === 'workbuddy'
+      ? [
+        { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash' },
+        { id: 'hy4flash-free', name: 'Hy4 flash' },
+        { id: 'not-allowed', name: 'Not allowed' },
+      ]
+      : []),
+    resolveModelInfo: async (providerId, modelId) => ({
+      id: modelId,
+      name: `${modelId} (resolved)`,
+      reasoning: { defaultEffort: 'high', efforts: [{ id: 'high', name: 'High' }] },
+    }),
+  };
+  const services = { subagents, agentPresets: {}, llm };
   // A default official list is installed so that "an ordinary allowed route"
   // is the baseline; `official: null` opts out (service unavailable).
   if (official !== null) {
@@ -357,6 +377,77 @@ await checkAsync('replacement: repeated agent/created is idempotent', async () =
   assert(agent.restrictions.length === 1, `restrict ran ${agent.restrictions.length} times`);
   assert(agent.registrations.has('subagent'), 'tool should still be registered');
 });
+
+log.push('=== replacement: list_subagent_models ===');
+
+await checkAsync('list replacement: registers scoped tool and denies the global one', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ replaceSubagentTool: false, replaceListModelsTool: true }));
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  assert(agent.registrations.has('list_subagent_models'), 'list tool was not registered');
+  assert(agent.restrictions.some((r) => r.deny?.includes('list_subagent_models')),
+    'the official list tool must be denied in this scope');
+  // The subagent replacement stays off, so its own name must NOT be shadowed.
+  assert(!agent.restrictions.some((r) => r.deny?.includes('subagent')),
+    'subagent must not be denied when only the listing switch is on');
+});
+
+await checkAsync('list replacement: answers from settings, not from a stale snapshot', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ replaceListModelsTool: true }));
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  const tool = agent.registrations.get('list_subagent_models');
+  // hy4flash-free is in the OFFICIAL settings list; a stale session snapshot is
+  // exactly what made the official tool refuse it, so this must now answer.
+  const text = await tool.execute({ provider: 'workbuddy', model: 'hy4flash-free' }, { agent, signal: undefined });
+  assert(text.includes('workbuddy/hy4flash-free'), `unexpected output: ${text}`);
+  assert(/Reasoning efforts/.test(text), 'efforts section missing');
+});
+
+await checkAsync('list replacement: refuses a route outside the official list', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ replaceListModelsTool: true }));
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  const tool = agent.registrations.get('list_subagent_models');
+  await assertRejects(
+    () => tool.execute({ provider: 'workbuddy', model: 'not-allowed' }, { agent }),
+    /not-allowed/,
+  );
+});
+
+await checkAsync('list replacement: provider listing is filtered by the allow-list', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ replaceListModelsTool: true }));
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  const tool = agent.registrations.get('list_subagent_models');
+  const text = await tool.execute({}, { agent });
+  assert(text.includes('workbuddy'), 'the allowed provider should be listed');
+  assert(!text.includes('unlisted'), 'an unlisted provider must not be listed');
+});
+
+await checkAsync('list replacement: model without provider is a malformed call', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ replaceListModelsTool: true }));
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  const tool = agent.registrations.get('list_subagent_models');
+  await assertRejects(() => tool.execute({ model: 'hy4flash-free' }, { agent }), /requires .provider./);
+});
+
+await checkAsync('list replacement: both switches on registers both tools', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config({ replaceSubagentTool: true, replaceListModelsTool: true }));
+  const agent = makeAgent({ provider: 'workbuddy', model: 'hy4flash-free' });
+  ctx.emitAgentCreated(agent);
+  assert(agent.registrations.has('subagent'), 'subagent replacement missing');
+  assert(agent.registrations.has('list_subagent_models'), 'list replacement missing');
+});
+
+log.push('');
 
 log.push('=== gate: agent/created (A) ===');
 
@@ -740,7 +831,7 @@ await checkAsync('volatileForm(Config) is not undefined (entry survives describe
   const form = volatileForm(Config);
   assert(form !== undefined, 'Config has no volatile field — the settings entry is dropped');
   const fields = Object.keys(form.dict ?? {}).sort();
-  const expected = ['auditDedupeMs', 'auditEveryStep', 'enforcement', 'includeAllowedListInError', 'recentDenialLimit', 'replaceSubagentTool', 'strict'];
+  const expected = ['auditDedupeMs', 'auditEveryStep', 'enforcement', 'includeAllowedListInError', 'recentDenialLimit', 'replaceListModelsTool', 'replaceSubagentTool', 'strict'];
   assert(
     JSON.stringify(fields) === JSON.stringify(expected.sort()),
     `projected fields mismatch: ${fields.join(',')}`,
@@ -776,14 +867,35 @@ function selfcheckOf(ctx) {
   return ctx.globalRegistrations.get('guard_selfcheck');
 }
 
-await checkAsync('selfcheck: tool is registered globally with no parameters', async () => {
+await checkAsync('selfcheck: global tool with only an optional route argument', async () => {
   const ctx = makeCtx();
   apply(ctx, config());
   const tool = selfcheckOf(ctx);
   assert(tool !== undefined, 'guard_selfcheck was not registered globally');
-  assert(Object.keys(tool.parameters.properties).length === 0, 'selfcheck must take no params');
+  // `route` is the one optional argument: it answers "would this be allowed?"
+  // without dispatching. Nothing is required, so a bare call still works.
+  const properties = Object.keys(tool.parameters.properties ?? {});
+  assert(properties.length === 1 && properties[0] === 'route',
+    `selfcheck should expose only the optional route argument, got: ${properties.join(',')}`);
+  assert(Array.isArray(tool.parameters.required) === false || tool.parameters.required.length === 0,
+    'route must stay optional');
   assert(/只读/.test(tool.description) && /不改任何状态/.test(tool.description),
     'description must state it is read-only and changes no state');
+});
+
+await checkAsync('selfcheck: route argument reports the verdict without dispatching', async () => {
+  const ctx = makeCtx();
+  apply(ctx, config());
+  const tool = selfcheckOf(ctx);
+  // The default fake official list in makeCtx allows workbuddy/hy4flash-free.
+  const allowed = await tool.execute({ route: 'workbuddy/hy4flash-free' });
+  assert(allowed.routeCheck?.verdict === 'allowed', 'a listed route must report allowed');
+  const refused = await tool.execute({ route: 'other/not-listed' });
+  assert(refused.routeCheck?.verdict === 'refused', 'an unlisted route must report refused');
+  const invalid = await tool.execute({ route: 'no-slash-here' });
+  assert(invalid.routeCheck?.verdict === 'invalid', 'a malformed route must report invalid');
+  // No dispatch may happen: the guard did not create any agent.
+  assert(ctx.attempts.length === 0, 'route checking must not dispatch anything');
 });
 
 await checkAsync('selfcheck: returns full shape and reflects live config', async () => {

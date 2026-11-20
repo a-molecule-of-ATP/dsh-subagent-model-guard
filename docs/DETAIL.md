@@ -8,7 +8,7 @@ The subagent route guard validates the `provider/model` a subagent will actually
 
 ## What problem it solves
 
-DSH's official subagent allow-list (`subagent-model-selection-settings`'s `allowedModels`) is frozen into a snapshot when a session starts: a model published while a session is open cannot be used in that old session. This plugin solves exactly that, and adds an explicit "who may delegate to whom" policy — you decide which routes are allowed and which are explicitly denied. The official list is read live through `subagentModelSelection.current()` and recomputed on every check, so edits to the official allow-list and to this plugin's config take effect immediately, with no reload.
+DSH's official subagent allow-list (`subagent-model-selection-settings`'s `allowedModels`) is frozen into a session snapshot (the model-selection policy recorded at session start): a model published while a session is open cannot be used in that old session. This plugin solves exactly that, and adds an explicit "who may delegate to whom" policy — you decide which routes are allowed and which are explicitly denied. The official list is read live through `subagentModelSelection.current()` and recomputed on every check, so edits to the official allow-list and to this plugin's config take effect immediately, with no reload.
 
 ## What a dispatch passes through
 
@@ -45,9 +45,23 @@ Both gates are always registered and behave according to live `enforcement`; the
 
 ![One call, two paths, two outcomes](snapshot-vs-replacement.svg)
 
-`replaceSubagentTool` is a setting (configured on the plugin page, persisting across dispatches, off by default); it replaces the official `subagent` tool with this plugin's own (a scoped shadow), letting subagents go straight to `startActivation` and bypass the snapshot frozen at session start — newly published models become usable immediately even in old sessions.
+`replaceSubagentTool` is a setting (configured on the plugin page, persisting across dispatches, off by default); it replaces the official `subagent` tool with this plugin's own, letting subagents go straight to `startActivation` and bypass the session snapshot — newly published models become usable immediately even in old sessions.
 
-The cost is that it shadows only `subagent`: `subagent_fork` keeps the official tool and stays bound by the same session model snapshot. The replacement is registered into each agent scope at `agent/created`, with a catch-up pass for agents that already exist.
+The cost is that it replaces only `subagent`: `subagent_fork` keeps the official tool and stays bound by the same session snapshot. The replacement tool is registered into each agent scope at `agent/created`; at plugin load it also makes one catch-up pass for agents that already exist, and turning the switch on from the settings page mid-session does not repeat that pass.
+
+## The second replacement tool: `list_subagent_models`
+
+The official `list_subagent_models` reads the **session snapshot** (the first `subagent/model-selection-policy` event), not the current settings. Adding a model to the allow-list mid-session therefore still reports "not allowed for this Session" — an error that reads like a permissions problem but is a stale session snapshot.
+
+With `replaceListModelsTool` on, this plugin provides that tool instead and answers from the **current official settings**:
+
+| Call | What it returns |
+|---|---|
+| no arguments | the providers that appear in the allow-list |
+| `provider` | that provider's allowed models |
+| `provider` + `model` | that model and its reasoning efforts |
+
+The output format follows the official one, so callers see no change. It pairs with `replaceSubagentTool`: one answers "may this be dispatched", the other "what can be dispatched".
 
 ## Typical usage
 
@@ -55,7 +69,7 @@ The list lives in **DSH's own subagent model selection settings**; this plugin p
 
 **Allow only some models** — list them in the official settings; this plugin follows immediately.
 
-**Make a new model usable in old sessions immediately** (enable the replacement tool so it bypasses the snapshot frozen at session start):
+**Make a new model usable in old sessions immediately** (enable the replacement tool so it bypasses the session snapshot):
 ```json
 {
   "replaceSubagentTool": true
@@ -71,7 +85,7 @@ The list lives in **DSH's own subagent model selection settings**; this plugin p
 
 ## Self-check
 
-`guard_selfcheck` is a read-only diagnostic tool with no parameters that changes nothing. It reports whether the guard is active (`active`), the strict flag and `enforcement` mode, what the official allow-list returned, the effective route count, the state of both gates and the replacement tool, the recent denial count, and a per-item `checks` array. **The settings page now ends with a 自检 card whose "运行自检" button hits the same read-only route and runs the same check**, so the button and the tool can never report differently; the route is not registered when the host has no web server, in which case the button reports that it cannot fetch the data.
+`guard_selfcheck` is a read-only diagnostic tool that changes nothing. Its only parameter is an optional `route` ("provider/model"); passing it answers "would this route be allowed right now, and why" without creating any subagent, so a refusal can be predicted rather than provoked. It reports whether the guard is active (`active`), the strict flag and `enforcement` mode, what the official allow-list returned, the effective route count, the state of both gates and the replacement tool, the recent denial count, and a per-item `checks` array. **The settings page now ends with a 自检 card whose "运行自检" button hits the same read-only route and runs the same check**, so the button and the tool can never report differently; the route is not registered when the host has no web server, in which case the button reports that it cannot fetch the data.
 
 **The 最近拒绝 table** below it lists each refusal: time, kind, parent route → child route, and the reason — it answers "why was that dispatch refused". It reads the in-memory denial log, capped by the 「保留最近拒绝数」 setting; when that is 0 the table says so instead of pretending everything is fine.
 
@@ -94,7 +108,7 @@ More than one DSH plugin manages subagent models, but they aim at different thin
 | `CypherNaught-0x/DSH-Subagent-Model-Router` | picks the best model by capability tag | the opposite goal: it optimises, this one gates |
 | `Funny1Potato/dsh-outsourcing-expert` | a preset that forces outsourcing, after scouting available models | prompt-level guidance, not runtime enforcement |
 
-**The most concrete difference**: an optional replacement of the official `subagent` tool that goes straight to `ctx.subagents.startActivation()`, bypassing the model snapshot DSH freezes at session start. The projects above all work in the routing layer *before* that snapshot takes effect; none of them addresses "an old session has a frozen `subagent` tool schema, so a newly published model cannot be passed in at all".
+**The most concrete difference**: an optional replacement of the official `subagent` tool that goes straight to `ctx.subagents.startActivation()`, bypassing the session snapshot. The projects above all work in the routing layer *before* that snapshot takes effect; none of them addresses "an old session has a frozen `subagent` tool schema, so a newly published model cannot be passed in at all".
 
 Two further points are design choices rather than capabilities:
 

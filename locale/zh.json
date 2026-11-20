@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "子智能体路由守卫",
-    "description": "子智能体省略 `model` 时会继承父级路由，实际运行的模型可能与预期不同；会话启动时冻结的模型快照也会让新上架的模型派发不出去。这个插件在派发前校验实际运行的 provider/model。放行依据只有 DSH 官方 subagent-model-selection-settings 的 allowedModels，每次派发实时读取，因此在官方设置里改了模型立刻生效，本插件不维护自己的名单，也没有黑名单或通配符。官方列表为空、官方关闭或服务不可用时不做限制（fail-open）。拦截点由 enforcement 选择：agent-created 在创建时校验、覆盖 workflow，start-activation 包住 ctx.subagents、在 agent 构造前拒绝，也可 both 同时启用。可选的替身工具用本插件的 subagent 取代官方工具，绕开会话启动时冻结的模型快照，新上架模型立即可用；代价是它仅作 scoped shadow，subagent_fork 仍保留官方工具、受同一快照限制。当 provider/model 无法确定时（如外部 acp/SDK 后端不触发 agent/created）放行并记录，不硬拒；审计模式只写日志、不拦截。自查可用只读诊断工具 guard_selfcheck 查看生效状态与最近拒绝情况，它不改变任何状态。",
+    "description": "子智能体省略 `model` 时会继承父级路由，实际运行的模型可能与预期不同；会话快照也会让新上架的模型派发不出去。这个插件在派发前校验实际运行的 provider/model。放行依据只有 DSH 官方 subagent-model-selection-settings 的 allowedModels，每次派发实时读取，因此在官方设置里改了模型立刻生效，本插件不维护自己的名单，也没有黑名单或通配符。官方列表为空、官方关闭或服务不可用时不做限制（fail-open）。拦截点由 enforcement 选择：agent-created 在创建时校验、覆盖 workflow，start-activation 包住 ctx.subagents、在 agent 构造前拒绝，也可 both 同时启用。可选的替身工具用本插件的 subagent 取代官方工具，绕开会话启动时冻结的模型快照，新上架模型立即可用；代价是它仅作替身工具，subagent_fork 仍保留官方工具、受同一会话快照限制。当 provider/model 无法确定时（如外部 acp/SDK 后端不触发 agent/created）放行并记录，不硬拒；审计模式只写日志、不拦截。开启 `replaceListModelsTool` 后，`list_subagent_models` 改按当前官方设置列出与查询模型（官方那份按会话快照回答，中途新加的模型会被报成不可用）。只读诊断工具 `guard_selfcheck` 不传参数时报告生效状态与最近拒绝情况；可选传 `route`（\"provider/model\"）预判某条路由会不会被放行、为什么，不真的派发；它不改变任何状态。",
     "detail": "docs/DETAIL.zh.md"
   }
 }

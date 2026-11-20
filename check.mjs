@@ -64,5 +64,27 @@ if (existsSync(docs)) {
   pass('doc images resolve');
 }
 
+// 5. the stated setting count must match the schema.
+//    The number is written in prose twice (Chinese and English) and drifts the
+//    moment a setting is added — which is how "7 项" survived alongside eight.
+const WORDS = {
+  5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine', 10: 'ten', 11: 'eleven', 12: 'twelve',
+};
+const counted = Object.keys(mod.Config?.dict ?? {}).length;
+const zhCount = /共 \*\*(\d+) 项\*\*/.exec(readme);
+const enCount = /(five|six|seven|eight|nine|ten|eleven|twelve) volatile settings/.exec(readme);
+if (zhCount === null) fail('README does not state the setting count as "共 **N 项**"');
+else if (Number(zhCount[1]) !== counted) {
+  fail(`README says ${zhCount[1]} settings, Config has ${counted}`);
+}
+if (enCount === null) fail('README English summary does not state the setting count');
+else if (enCount[1] !== WORDS[counted]) {
+  fail(`README English summary says "${enCount[1]}", Config has ${counted} (${WORDS[counted]})`);
+}
+if (zhCount !== null && enCount !== null
+  && Number(zhCount[1]) === counted && enCount[1] === WORDS[counted]) {
+  pass(`setting count ${counted} matches both language summaries`);
+}
+
 console.log(problems === 0 ? '\nSELF-CHECK OK' : `\n${problems} PROBLEM(S)`);
 process.exitCode = problems === 0 ? 0 : 1;
